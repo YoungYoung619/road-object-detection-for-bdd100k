@@ -149,7 +149,7 @@ def encode_locations_one_layer(anchors_one_layer, center_bbox):
         center_bbox: describe a bounding box coordinate ,should be [y, x, h, w]
 
     Return:
-        a feature map describes the transition from bbox to anchors
+        a feature map describes the offset from bbox to anchors
     """
     yref, xref, href, wref = anchors_one_layer
     ymin = yref - href / 2.
@@ -175,6 +175,61 @@ def encode_locations_one_layer(anchors_one_layer, center_bbox):
     feat_w = tf.log(center_bbox[3] / anchor_w)
     feat_location = tf.stack([feat_cy, feat_cx, feat_h, feat_w], axis=-1)
     return feat_location
+
+
+def decode_locations_one_layer(anchors_one_layer, offset_bboxes):
+    """decode the offset bboxes into center bboxes
+    Args:
+        anchors_one_layer: ndarray represents all anchors coordinate in one layer,
+                            encode by [y,x,h,w]
+        offset_bboxes: A tensor with any shape ,the shape of lowest axis must be 4,
+                            means the offset val in [y,x,h,w]
+    Return:
+        the locations of bboxes encode by [y,x,h,w]
+
+    """
+    shape = offset_bboxes.get_shape().as_list()
+    try:
+        i = shape.index(None)
+        shape[i] = -1
+    except ValueError:
+        pass
+
+    offset_bboxes = tf.reshape(offset_bboxes,shape=tf.stack([shape[0], -1, shape[-1]]))
+
+    yref, xref, href, wref = anchors_one_layer
+    ymin = yref - href / 2.
+    xmin = xref - wref / 2.
+    ymax = yref + href / 2.
+    xmax = xref + wref / 2.
+
+    anchor_ymin = np.float32(ymin)
+    anchor_xmin = np.float32(xmin)
+    anchor_ymax = np.float32(ymax)
+    anchor_xmax = np.float32(xmax)
+
+    # Transform to center / size.
+    anchor_cy = (anchor_ymax + anchor_ymin) / 2.
+    anchor_cx = (anchor_xmax + anchor_xmin) / 2.
+    anchor_h = anchor_ymax - anchor_ymin
+    anchor_w = anchor_xmax - anchor_xmin
+
+    ## reshape to -1 ##
+    anchor_cy = np.reshape(anchor_cy,[-1])
+    anchor_cx = np.reshape(anchor_cx, [-1])
+    anchor_h = np.reshape(anchor_h, [-1])
+    anchor_w = np.reshape(anchor_w, [-1])
+
+
+    bboxes_cy = offset_bboxes[:, :, 0] * anchor_h + anchor_cy
+    bboxes_cx = offset_bboxes[:, :, 1] * anchor_w + anchor_cx
+    bboxes_h = tf.exp(offset_bboxes[:, :, 2]) * anchor_h
+    bboxes_w = tf.exp(offset_bboxes[:, :, 3]) * anchor_w
+
+    cbboxes_out = tf.stack([bboxes_cy, bboxes_cx, bboxes_h, bboxes_w], axis=-1)
+    cbboxes_out = tf.reshape(cbboxes_out, shape=shape)
+
+    return cbboxes_out
 
 
 def jaccard(anchors, corner_bbox):
@@ -210,7 +265,7 @@ def jaccard(anchors, corner_bbox):
     return tf.reshape(jaccard, shape=shape)
 
 
-def gt_refine_loss(anchors_all_layer, center_bboxes, labels, method, scope="refine_encode"):
+def refine_groundtruth(anchors_all_layer, center_bboxes, labels, method, scope="refine_encode"):
     """produce ground truth for loss1
     Args:
         anchors_all_layer: anchor boxes coordinate in all layers.
@@ -232,8 +287,8 @@ def gt_refine_loss(anchors_all_layer, center_bboxes, labels, method, scope="refi
     def get_t_info(i,feat):
         """
         """
-        transition_val_ = encode_locations_one_layer(anchors_one_layer, center_bboxes[i])
-        f = tf.expand_dims(transition_val_, axis=0)
+        offset_val_ = encode_locations_one_layer(anchors_one_layer, center_bboxes[i])
+        f = tf.expand_dims(offset_val_, axis=0)
         feat = tf.concat([feat,f],axis=0)
         return [i+1,feat]
 
@@ -297,8 +352,8 @@ def gt_refine_loss(anchors_all_layer, center_bboxes, labels, method, scope="refi
             if method == config.refine_method.NEAREST_NEIGHBOR:
                 ## init some vars to tf.while_loop ##
                 i = tf.constant(1)
-                transition_val = encode_locations_one_layer(anchors_one_layer, center_bboxes[0])
-                feat = tf.expand_dims(transition_val, axis=0)
+                offset_val = encode_locations_one_layer(anchors_one_layer, center_bboxes[0])
+                feat = tf.expand_dims(offset_val, axis=0)
 
                 ## to get the which anchors are closest to the bboxes ##
                 i,location_all_bboxes = tf.while_loop(get_t_info_condition, get_t_info,[i,feat],
@@ -309,8 +364,8 @@ def gt_refine_loss(anchors_all_layer, center_bboxes, labels, method, scope="refi
                 # responsible_index.append(minDistanceIndex)
 
                 ## init some vars to tf.while_loop ##
-                gt_one_layer = tf.zeros(shape=transition_val.get_shape(),dtype=tf.float32)
-                cbboxes_one_layer = tf.zeros(shape=transition_val.get_shape(), dtype=tf.float32)
+                gt_one_layer = tf.zeros(shape=offset_val.get_shape(),dtype=tf.float32)
+                cbboxes_one_layer = tf.zeros(shape=offset_val.get_shape(), dtype=tf.float32)
                 labels_one_layer = tf.zeros(shape=minDistanceIndex.get_shape().as_list()+[1], dtype=tf.int32)
                 i = tf.constant(0)
                 i,gt_one_layer,cbboxes_one_layer,labels_one_layer = tf.while_loop(condition_near, body_near,
@@ -369,6 +424,204 @@ def gt_refine_loss(anchors_all_layer, center_bboxes, labels, method, scope="refi
                 raise ValueError('Function parameter "method" wrong')
 
         return gt_list, ccboxes_list, labels_list, pos_mask_list
+
+
+def det_groundtruth(refine_out, offset_gt, cbboxes,
+                refine_labels, refine_pos_mask, anchors, scope="det_encode"):
+    """produce the ground truth for loss2
+    Args:
+        refine_out: a list which is composed by the output tensors from refine net, represents
+                    the prediction of offset from obj to anchor.
+        offset_gt: a list of tensor which is composed by the ground truth representing
+            the offset from obj to initial anchor box in all layers
+        refine_pos_mask: a list of tensor indicates which anchor is responsible for obj detection
+        cbboxes: a list of tensor represents the bounding boxes encoded by [xc, yc, h, w].
+        refine_labels: a list of tensor represents what kind of object in each initial anchor box.
+        anchors: a list of ndarray indicates the initial anchor boxes position and size in all layers.
+    Return:
+        A list respresents the ground truth offset val for loss2 in all layers
+        A list respresents the mask which means the anchor box's IOU > 0.5 in all layers
+        A list represents the lable in all layers
+    """
+    mask_all_layers = []
+    det_groundtruth = []
+    det_labels = []
+    pos_seg_config = config.det_pos_jac_val_all_layers
+    with tf.name_scope(scope):
+        for refine_out_one_l, offset_gt_one_l,cbboxes_one_l,\
+            labels_one_l, refine_p_mask_one_l, anchors_one_l, pos_seg in zip(refine_out, offset_gt,
+                                                                           cbboxes,refine_labels,refine_pos_mask,
+                                                                           anchors, pos_seg_config):
+            ## get the coordinate of anchor boxes after adjustment ##
+            center_adanchors_one_layer = decode_locations_one_layer(anchors_one_l, refine_out_one_l)
+            corner_adanchors_one_layer = centerBboxes_2_cornerBboxes(center_adanchors_one_layer)
+
+            ## caculate the  jaccard of ground truth and anchor boxes after adjstment##
+            corner_bboxes = centerBboxes_2_cornerBboxes(cbboxes_one_l)
+
+            iou_one_layer = jaccard(corner_adanchors_one_layer, corner_bboxes)
+            iou_one_layer_f = tf.expand_dims(iou_one_layer,axis=-1)
+            positive_mask_oneL = tf.greater_equal(iou_one_layer_f, pos_seg)
+            positive_mask_oneL = tf.cast(positive_mask_oneL, dtype=tf.int32)*tf.cast(refine_p_mask_one_l,tf.int32) ###filter some bboxes
+
+            det_groundtruth.append((offset_gt_one_l-refine_out_one_l)*tf.cast(positive_mask_oneL,tf.float32))
+            det_labels.append(labels_one_l*positive_mask_oneL)
+            mask_all_layers.append(positive_mask_oneL)
+
+    return det_groundtruth, mask_all_layers, det_labels
+
+
+def smooth_l1(x):
+    """Smoothed absolute function. Useful to compute an L1 smooth error.
+    Define as:
+        x^2 / 2         if abs(x) < 1
+        abs(x) - 0.5    if abs(x) > 1
+    We use here a differentiable definition using min(x) and abs(x). Clearly
+    not optimal, but good enough for our purpose!
+    """
+    absx = tf.abs(x)
+    minx = tf.minimum(absx, 1)
+    r = 0.5 * ((absx - 1) * minx + absx)
+    return r
+
+
+def refine_loss(refine_out, refine_groundtruth, refine_pos_mask, dtype=tf.float16):
+    """get loss of refine net
+    Args:
+        refine_out: a list of refine out in all layers.
+        refine_groundtruth: a list of refine ground-truth in all layers.
+        refine_pos_mask: a list of mask indicate which anchor box resposible
+                        for refine detection.
+    Return: a Tensor represents the loss of refine net, with a shape (,).
+    """
+    ## process refine loss ##
+
+    refine_pos_num_all_layers = []
+    with tf.name_scope("refine_loss_process"):
+        refine_loss = 0.
+        i = 0
+        for y, x, mask in zip(refine_groundtruth, refine_out, refine_pos_mask):
+            bs = tf.cast(tf.shape(y)[0], dtype=dtype)
+            mask = tf.cast(mask, dtype)
+            y = tf.cast(y, dtype=dtype)
+            refine_pos_num_one_layer = tf.reduce_sum(mask) / bs
+            refine_pos_num_all_layers.append(refine_pos_num_one_layer)
+            refine_loss_one_layer = tf.reduce_sum(smooth_l1((y - x) * mask)) / bs
+            tf.summary.scalar("layer_%d_each_sample" % (i+1), refine_loss_one_layer / (refine_pos_num_one_layer+1e-5))
+            refine_loss += refine_loss_one_layer
+    return refine_loss
+
+
+def det_clf_loss(refine_out, clf_out, det_out, det_groundtruth, det_pos_mask, det_labels, dtype=tf.float32):
+    """build the loss of offset and classification
+    Args:
+        refine_out: the output of refine net, represents the prediciton of offset from initial anchor to groundtruth.
+        clf_out: the output of clf net, represents the logits in each layers.
+        det_out: the output of det out, represents the predicition of offset from refine anchor to groundtruth.
+        det_groundtruth: represents the groundtruth of refine anchor to groundtruth.
+        det_pos_mask: represnts the positive mask.
+        det_labels: represnets the groundtruth of labels in each refine anchor.
+    Return:
+        detection_loss: represents the loss of offset from refine anchor to groundtruth
+        classifition_loss: represents the loss of classification
+    """
+    bs = tf.cast(tf.shape(refine_out[0])[0], dtype=dtype)
+
+    ## process det loss ##
+    pos_num_all_layers = []
+    with tf.name_scope("det_loss_process"):
+        det_loss = 0.
+        i = 0
+
+        for y, x, m in zip(det_groundtruth, det_out, det_pos_mask):
+            m = tf.cast(m, dtype=dtype)
+            pos_num_one_layer = tf.reduce_sum(m)
+            pos_num_all_layers.append(pos_num_one_layer / bs)
+            tf.summary.scalar("layer_%d"%(i+1),pos_num_one_layer / bs)
+            val = smooth_l1((y - x) * m)
+            det_loss += tf.reduce_sum(val) / bs
+            i += 1
+
+    ## process clf loss ##
+    with tf.name_scope("clf_loss_process"):
+        # Flatten out all vectors!
+        flogits = []
+        fgclasses = []
+        fpmask = []
+        for labels, logits, m in zip(det_labels, clf_out, det_pos_mask):
+            flogits.append(tf.reshape(logits, [-1, config.total_obj_n]))
+            fgclasses.append(tf.reshape(labels, [-1]))
+            fpmask.append(tf.reshape(m, [-1]))
+
+        logits = tf.concat(flogits, axis=0)
+        gclasses = tf.concat(fgclasses, axis=0)
+        pmask = tf.cast(tf.concat(fpmask, axis=0), tf.bool)
+        fpmask = tf.cast(pmask, dtype)
+
+        n_positives = tf.reduce_sum(tf.cast(pmask, dtype))## positive num
+
+        # Hard negative mining...
+        no_classes = tf.cast(pmask, tf.int32)
+        predictions = slim.softmax(logits)
+        nmask = tf.logical_not(pmask)
+        fnmask = tf.cast(nmask, dtype)
+
+        nvalues = tf.where(nmask, predictions[:, 0], 1. - fnmask)
+
+        # Number of negative entries to select.
+        negative_ratio = 3.
+        max_neg_entries = tf.cast(tf.reduce_sum(fnmask), tf.int32)
+        n_neg = tf.cast(negative_ratio * n_positives, tf.int32) + tf.cast(bs, dtype=tf.int32)
+        n_neg = tf.minimum(n_neg, max_neg_entries)
+
+        val, idxes = tf.nn.top_k(-nvalues, k=n_neg)
+        max_hard_pred = -val[-1]
+        tf.summary.scalar("max hard predition", max_hard_pred) ## the bigger, the better
+        # Final negative mask.
+        nmask = tf.logical_and(nmask, nvalues < max_hard_pred)
+        fnmask = tf.cast(nmask, dtype)
+
+        with tf.name_scope('cross_entropy_pos'):
+            clf_weights = np.array([1., 50., 4., 3., 8., 50., 20.,50., 1., 50., 50.])/280.
+            gclasses = tf.one_hot(gclasses, config.total_obj_n)*clf_weights
+            pos_loss = tf.nn.softmax_cross_entropy_with_logits(logits=logits,
+                                                                labels=gclasses)
+            pos_loss = tf.div(tf.reduce_sum(pos_loss * fpmask), bs, name='value')
+
+        with tf.name_scope('cross_entropy_neg'):
+            neg_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=logits,
+                                                                          labels=no_classes)
+            neg_loss = tf.div(tf.reduce_sum(neg_loss * fnmask), bs, name='value')
+
+        clf_loss = neg_loss + pos_loss
+
+    return det_loss, clf_loss
+
+
+def optimizer(loss, global_step, learning_rate=1e-3, var_list=None):
+    """build a optimizer to updata the weights
+    Args:
+        loss: a tensor reprensents the total loss
+        global_step: a tensor represents the global step during training
+    Return:
+        a ops to updata the weights
+    """
+    # configure the learning rate#
+    # learning_rate = tf.train.exponential_decay(self.__learningRate, self.__global_step_tensor,
+    #                                            2 * self.__samplesNum / self.__batchSize, 0.94, staircase=True)
+
+    update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
+    with tf.control_dependencies(update_ops):
+        optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate, epsilon=1e-8)
+        #optimizer = tf.train.GradientDescentOptimizer(learning_rate=learning_rate)
+        grads_and_vars = optimizer.compute_gradients(loss, var_list=var_list)
+
+        ## clip the gradients ##
+        capped_gvs = [(tf.clip_by_value(grad, -5., 5.), var)
+                        for grad, var in grads_and_vars]
+        training_op = optimizer.apply_gradients(capped_gvs, global_step=global_step)
+
+    return training_op
 
 
 if __name__ == '__main__':

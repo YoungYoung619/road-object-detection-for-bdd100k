@@ -16,18 +16,22 @@ import collections
 import tensorflow as tf
 
 import utils.net_tools as net_tools
-from nets.backbone.mobilenet_v2 import mobilenetv2
+from nets.backbone.mobilenet.mobilenet_v2 import mobilenet_v2
+from nets.backbone.mobilenet.mobilenet_v2 import training_scope
 from nets.backbone.vgg import vgg_16
+from nets.backbone.vgg import vgg_arg_scope
 import config
 
 slim = tf.contrib.slim
 
-backbone_maps = {"mobilenet_v2":mobilenetv2,
+backbone_maps = {"mobilenet_v2":mobilenet_v2,
                  "vgg_16": vgg_16}
+arg_maps = {"mobilenet_v2":training_scope,
+                 "vgg_16": vgg_arg_scope}
 
 class factory(object):
     """a class provide the net output"""
-    def __init__(self, inputs, backbone_name, is_training, config_dict):
+    def __init__(self, inputs, backbone_name, is_training, config_dict, dtype=tf.float32):
         """
         Args:
             inputs: imgs tensor with the shape [bs, h, w, c]
@@ -39,10 +43,11 @@ class factory(object):
         self. backbone_name = backbone_name
 
         ##build backbone
-        tf.logging.info('Building backbone---%s...'%(backbone_name))
         with tf.variable_scope('backbone'):
             net = backbone_maps[backbone_name]
-            end_points = net(inputs=inputs, is_training=is_training)
+            with slim.arg_scope(arg_maps[backbone_name]()):
+                end_points = net(inputs=inputs, is_training=is_training)
+
             backbone_feats = self.__process_backbone(end_points, config_dict['process_backbone_method'])
             self.backbone_feats = backbone_feats
 
@@ -51,7 +56,7 @@ class factory(object):
         ##build deconv and merge feats
         if config_dict['train_range'] is config.train_range.ALL:
             tf.logging.info('Building deconv net...')
-            deconv_feats = self.__deconv_bone(backbone_feats, config_dict['deconv_method'],  is_training)
+            deconv_feats = self.__deconv_bone(backbone_feats, config_dict['deconv_method'],  is_training, dtype)
             self.deconv_feats  = deconv_feats
             tf.logging.info('Merging feats...')
             merge_feats = self.__merge_feats(backbone_feats, deconv_feats, config_dict['merge_method'])
@@ -75,7 +80,6 @@ class factory(object):
                     val---feature maps which would be used to train refine anchors
         """
         assert method in list(config.process_backbone_method.__members__.values())
-        assert type(backbone_endpoints) == collections.OrderedDict
 
         backbone_feats = collections.OrderedDict()
 
@@ -88,7 +92,7 @@ class factory(object):
             pass
 
 
-    def __deconv_bone(self, backbone_feats, method, is_training, dtype=tf.float16, scope="deconv"):
+    def __deconv_bone(self, backbone_feats, method, is_training, dtype, scope="deconv"):
         """build the upsample net
         Args:
             backbone_feats: a dict represents all the extracted feature maps from backbone
@@ -216,17 +220,18 @@ class factory(object):
             det_out = []
             for i, tensor in enumerate(list(feats.values())):
                 input = tensor
-                with tf.variable_scope("block_%d" % (i + 1)):
-                    for channel in det_conv_config[i]:
-                        ## learn half ##
-                        conv = slim.conv2d(input, channel, [1, 1], activation_fn=None)
-                        conv = slim.batch_norm(conv, is_training=is_training, activation_fn=tf.nn.leaky_relu)
-                        conv = slim.conv2d(conv, channel, [3, 3], activation_fn=None)
-                        output = slim.batch_norm(conv, is_training=is_training, activation_fn=tf.nn.leaky_relu)
-                        input = output
-                hw = output.get_shape().as_list()[1:3]
-                output = tf.reshape(output, shape=[-1] + hw + [n_anchor_each_layer[i], 4])
-                det_out.append(output)
+                with slim.arg_scope([slim.conv2d], weights_regularizer=slim.l2_regularizer(1e-4)):
+                    with tf.variable_scope("block_%d" % (i + 1)):
+                        for channel in det_conv_config[i]:
+                            ## learn half ##
+                            conv = slim.conv2d(input, channel, [1, 1], activation_fn=None)
+                            conv = slim.batch_norm(conv, is_training=is_training, activation_fn=tf.nn.leaky_relu)
+                            conv = slim.conv2d(conv, channel, [3, 3], activation_fn=None)
+                            output = slim.batch_norm(conv, is_training=is_training, activation_fn=tf.nn.leaky_relu)
+                            input = output
+                    hw = output.get_shape().as_list()[1:3]
+                    output = tf.reshape(output, shape=[-1] + hw + [n_anchor_each_layer[i], 4])
+                    det_out.append(output)
         return det_out
 
 
@@ -249,16 +254,17 @@ class factory(object):
             clf_out = []
             for i, tensor in enumerate(list(feats.values())):
                 input = tensor
-                with tf.variable_scope("block_%d" % (i + 1)):
-                    for channel in clf_conv_config[i]:
-                        conv = slim.conv2d(input, channel, [1, 1], activation_fn=None)
-                        conv = slim.batch_norm(conv, is_training=is_training, activation_fn=tf.nn.leaky_relu)
-                        conv = slim.conv2d(conv, channel, [3, 3], activation_fn=None)
-                        output = slim.batch_norm(conv, is_training=is_training, activation_fn=tf.nn.leaky_relu)
-                        input = output
-                hw = output.get_shape().as_list()[1:3]
-                output = tf.reshape(output, shape=[-1] + hw + [n_anchor_each_layer[i], config.total_obj_n])
-                clf_out.append(output)  ##without softmax
+                with slim.arg_scope([slim.conv2d], weights_regularizer=slim.l2_regularizer(1e-4)):
+                    with tf.variable_scope("block_%d" % (i + 1)):
+                        for channel in clf_conv_config[i]:
+                            conv = slim.conv2d(input, channel, [1, 1], activation_fn=None)
+                            conv = slim.batch_norm(conv, is_training=is_training, activation_fn=tf.nn.leaky_relu)
+                            conv = slim.conv2d(conv, channel, [3, 3], activation_fn=None)
+                            output = slim.batch_norm(conv, is_training=is_training, activation_fn=tf.nn.leaky_relu)
+                            input = output
+                    hw = output.get_shape().as_list()[1:3]
+                    output = tf.reshape(output, shape=[-1] + hw + [n_anchor_each_layer[i], config.total_obj_n])
+                    clf_out.append(output)  ##without softmax
         return clf_out
 
     def get_output(self):

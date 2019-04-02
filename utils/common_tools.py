@@ -8,7 +8,10 @@ Description :
 Author：Team Li
 """
 import tensorflow as tf
+import logging
 
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 def centerBboxes_2_cornerBboxes(center_bboxes):
     """ change the center bounding boxes into corner bounding boxes

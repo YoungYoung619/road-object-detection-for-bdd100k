@@ -15,7 +15,7 @@ def relu(x, name='leaky_relu'):
     return tf.nn.leaky_relu(x, name=name)
 
 
-def batch_norm(x, momentum=0.9, epsilon=1e-5, train=True, name='bn'):
+def batch_norm(x, momentum=0.9, epsilon=1e-4, train=True, name='bn'):
     return tf.layers.batch_normalization(x,
                       momentum=momentum,
                       epsilon=epsilon,

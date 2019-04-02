@@ -17,12 +17,14 @@ special_anchor_range = [0.02, 0.03] ##two value indicate the size of anchor in f
 
 img_size = (418, 418) #default img height and width
 
+##supported backbone name
+supported_backbone_name = ['vgg_16', 'mobilenet_v2']
 
 ## extracted features name, each model can extract six feature layer##
 extract_feat_name = {'vgg_16':['backbone/vgg_16/conv4/conv4_3','backbone/vgg_16/conv5/conv5_3',
                               'backbone/vgg_16/block7/conv7','backbone/vgg_16/block8/conv3x3',
                               'backbone/vgg_16/block9/conv3x3','backbone/vgg_16/block10/conv3x3'],
-                     'mobilenet_v2':['layer_7','layer_11','layer_17',
+                     'mobilenet_v2':['layer_7','layer_14','layer_17',
                                      'layer_19','layer_21', 'layer_23']}
 
 ## only for input 418x418x3
@@ -72,6 +74,7 @@ class refine_method(Enum):
     JACCARD_TOPK = 2
 
 refine_pos_jac_val_all_layers = [0.2, 0.3, 0.4, 0.4, 0.3, 0.3]
+det_pos_jac_val_all_layers = [0.5, 0.6, 0.7, 0.7, 0.6, 0.6]
 
 ####### dataset config #############
 total_obj_n = 11 ##include background
