@@ -8,6 +8,7 @@ Some config
 Author：Team Li
 '''
 from enum import Enum, unique
+import numpy as np
 
 ######### net building config ##########
 ## anchor config, total 6 layers, each layer can produce different size of anchors##
@@ -24,8 +25,10 @@ supported_backbone_name = ['vgg_16', 'mobilenet_v2']
 extract_feat_name = {'vgg_16':['backbone/vgg_16/conv4/conv4_3','backbone/vgg_16/conv5/conv5_3',
                               'backbone/vgg_16/block7/conv7','backbone/vgg_16/block8/conv3x3',
                               'backbone/vgg_16/block9/conv3x3','backbone/vgg_16/block10/conv3x3'],
-                     'mobilenet_v2':['layer_7','layer_14','layer_17',
-                                     'layer_19','layer_21', 'layer_23']}
+                     # 'mobilenet_v2':['layer_7','layer_14','layer_17',
+                     #                 'layer_19','layer_21', 'layer_23']}
+                        'mobilenet_v2':['layer_11','layer_15','layer_18',
+                                     'layer_20','layer_22', 'layer_24']}
 
 ## only for input 418x418x3
 feat_size_all_layers = {'mobilenet_v2':{'layer_1':(53, 53), 'layer_2':(27, 27),'layer_3':(14, 14),
@@ -42,7 +45,7 @@ feat_size_all_layers = {'mobilenet_v2':{'layer_1':(53, 53), 'layer_2':(27, 27),'
 ### method used to process backbone endpoints ###
 class process_backbone_method(Enum):
     NONE = 0
-    CFE = 1
+    PREORDER_MSF = 1
     RESIZE = 2
     MSF = 3
 
@@ -76,6 +79,23 @@ class refine_method(Enum):
 refine_pos_jac_val_all_layers = [0.2, 0.3, 0.4, 0.4, 0.3, 0.3]
 det_pos_jac_val_all_layers = [0.5, 0.6, 0.7, 0.7, 0.6, 0.6]
 
+# clf_weights = np.array([1., 10., 4., 3., 8., 10., 8.,10., 1., 10., 10.])
+# clf_weights = np.array([1., 3., 1., 1., 1., 3., 1., 3., 1., 3., 3.])
+clf_weights = np.array([1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1.])
+
 ####### dataset config #############
 total_obj_n = 11 ##include background
+
+## for vis ##
+category_index = {0: {'name': 'Background'},
+                  1: {'name': 'Bus'},
+                  2: {'name': 'Light'},
+                  3: {'name': 'Sign'},
+                  4: {'name': 'Person'},
+                  5: {'name': 'Bike'},
+                  6: {'name': 'Truck'},
+                  7: {'name': 'Motor'},
+                  8: {'name': 'Car'},
+                  9: {'name': 'Train'},
+                  10: {'name': 'Rider'}}
 
