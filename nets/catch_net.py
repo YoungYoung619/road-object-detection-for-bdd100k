@@ -22,6 +22,8 @@ from nets.backbone.vgg import vgg_16
 from nets.backbone.vgg import vgg_arg_scope
 import config
 
+from nets.attention_module import *
+
 slim = tf.contrib.slim
 
 backbone_maps = {"mobilenet_v2":mobilenet_v2,
@@ -41,6 +43,8 @@ class factory(object):
         """
         assert backbone_name in list(backbone_maps.keys())
         self. backbone_name = backbone_name
+        self.is_training = is_training
+        self.train_range = config_dict['train_range']
 
         ##build backbone
         with tf.variable_scope('backbone'):
@@ -48,29 +52,47 @@ class factory(object):
             with slim.arg_scope(arg_maps[backbone_name]()):
                 end_points = net(inputs=inputs, is_training=is_training)
 
-            backbone_feats = self.__process_backbone(end_points, config_dict['process_backbone_method'])
+            backbone_feats = self.__feats_aug_block(end_points, config_dict['process_backbone_method'])
             self.backbone_feats = backbone_feats
 
-        self.train_range = config_dict['train_range']
+        if is_training:
 
-        ##build deconv and merge feats
-        if config_dict['train_range'] is config.train_range.ALL:
-            tf.logging.info('Building deconv net...')
-            deconv_feats = self.__deconv_bone(backbone_feats, config_dict['deconv_method'],  is_training, dtype)
-            self.deconv_feats  = deconv_feats
-            tf.logging.info('Merging feats...')
-            merge_feats = self.__merge_feats(backbone_feats, deconv_feats, config_dict['merge_method'])
-            self.merge_feats = merge_feats
+            ##build deconv and merge feats
+            if config_dict['train_range'] is config.train_range.ALL:
+                tf.logging.info('Building deconv net...')
+                deconv_feats = self.__deconv_bone(backbone_feats, config_dict['deconv_method'],  is_training, dtype)
+                self.deconv_feats  = deconv_feats
+                tf.logging.info('Merging feats...')
+                merge_feats = self.__merge_feats(backbone_feats, deconv_feats, config_dict['merge_method'],
+                                                 attention_module=se_block)
+                self.merge_feats = merge_feats
 
-        ## build refine, det, clf net ##
-        self.refine_out = self.__det_out(backbone_feats, is_training, scope='refine')
+            ## build refine, det, clf net ##
+            self.refine_out = self.__det_out(backbone_feats, is_training, scope='refine')
 
-        if config_dict['train_range'] is config.train_range.ALL:
-            self.clf_out = self.__clf_out(merge_feats, is_training, scope='clf')
-            self.det_out = self.__det_out(merge_feats, is_training, scope='det')
+            if config_dict['train_range'] is config.train_range.ALL:
+                self.clf_out = self.__clf_out(merge_feats, is_training, scope='clf')
+                self.det_out = self.__det_out(merge_feats, is_training, scope='det')
+        else: ## preditt or eval
+            if config_dict['train_range'] is config.train_range.ALL:
+                tf.logging.info('Building deconv net...')
+                deconv_feats = self.__deconv_bone(backbone_feats, config_dict['deconv_method'], is_training, dtype)
+                self.deconv_feats = deconv_feats
+                tf.logging.info('Merging feats...')
+                merge_feats = self.__merge_feats(backbone_feats, deconv_feats,
+                                                 config_dict['merge_method'], attention_module=se_block)
+                self.merge_feats = merge_feats
+
+                ## build refine, det, clf net ##
+                self.refine_out = self.__det_out(backbone_feats, is_training, scope='refine')
+                self.clf_out = self.__clf_out(merge_feats, is_training, scope='clf')
+                self.det_out = self.__det_out(merge_feats, is_training, scope='det')
+            else:
+                ## build refine, det, clf net ##
+                self.refine_out = self.__det_out(backbone_feats, is_training, scope='refine')
 
 
-    def __process_backbone(self, backbone_endpoints, method):
+    def __feats_aug_block(self, backbone_endpoints, method):
         """do some process in backbone endpoints
         Args:
             backbone_endpoints: endpoints of backbone
@@ -87,8 +109,48 @@ class factory(object):
             for index, feat_name in enumerate(config.extract_feat_name[self. backbone_name]):
                 backbone_feats['layer_%s'%(str(index+1))] = backbone_endpoints[feat_name]
             return backbone_feats
+        elif method is config.process_backbone_method.PREORDER_MSF:
+            if self.backbone_name == 'mobilenet_v2':
+                aug_extrated_feats_blocks = [['layer_2', 'layer_4'],
+                                            ['layer_7', 'layer_11']]
+                compress_ch_blocks = [[4, 8], [12, 48]]
+
+                for index, feat_name in enumerate(config.extract_feat_name[self.backbone_name]):
+                    if index < len(aug_extrated_feats_blocks):
+                            aug_extrated_feats_block = aug_extrated_feats_blocks[index]
+                            compress_ch_block = compress_ch_blocks[index]
+                            s_feat = backbone_endpoints[feat_name]
+                            aug_feat = []
+                            for i, aug_extrated_feats_name in enumerate(aug_extrated_feats_block):
+                                feat = backbone_endpoints[aug_extrated_feats_name]
+                                ## h diff
+                                h = feat.get_shape().as_list()[1]
+                                s_h = s_feat.get_shape().as_list()[1]
+                                h_diff = abs(h - (round(h/s_h))*s_h)
+                                ## w diff
+                                w = feat.get_shape().as_list()[2]
+                                s_w = s_feat.get_shape().as_list()[2]
+                                w_diff = abs(w - (round(w / s_w)) * s_w)
+
+                                paddings = tf.constant([[0, 0], [h_diff, 0], [w_diff, 0], [0, 0]])
+                                feat = tf.pad(feat, paddings, 'CONSTANT')
+
+                                feat = slim.conv2d(feat, compress_ch_block[i], [1, 1], activation_fn=None)
+                                feat = slim.batch_norm(feat, is_training=self.is_training, activation_fn=tf.nn.leaky_relu)
+
+                                if round(h/s_h) > 1:
+                                    feat = tf.space_to_depth(feat, block_size=round(h/s_h))
+                                aug_feat.append(feat)
+                            aug_feat.append(s_feat)
+                            aug_feat = tf.concat(aug_feat, axis=-1)
+                            backbone_feats['layer_%s' % (str(index + 1))] = se_block(aug_feat, name='aug_layer_%s' % (str(index + 1)))
+                    else:
+                        backbone_feats['layer_%s' % (str(index + 1))] = backbone_endpoints[feat_name]
+                return  backbone_feats
+            else:
+                raise ValueError('Sorry, not support the method(%s) for mobilenet_v2 now ~_~!!' % str(method))
         else:
-            raise ValueError('Not support the method(%s)'%str(method))
+            raise ValueError('Not support the method(%s) now ~_~!!'%str(method))
             pass
 
 
@@ -128,7 +190,7 @@ class factory(object):
                             #tf.summary.histogram(de_weight.name, de_weight)
                             shape = feat_layers[i].get_shape().as_list()
                             # output_shape  = ops.convert_to_tensor([-1, shape[1], shape[2], f_c])
-                            upsample = tf.nn.conv2d_transpose(input, de_weight, output_shape=[-1, shape[1], shape[2], f_c],
+                            upsample = tf.nn.conv2d_transpose(input, de_weight, output_shape=[shape[0], shape[1], shape[2], f_c],
                                                               strides=[1, 2, 2, 1], padding="SAME")
 
                             # learn_half = slim.conv2d(upsample, f_c, [3, 3], activation_fn=None)
@@ -169,12 +231,13 @@ class factory(object):
         return deconv_feats
 
 
-    def __merge_feats(self, backbone_feats, deconv_feats, method, scope='merge'):
+    def __merge_feats(self, backbone_feats, deconv_feats, method, attention_module=None, scope='merge'):
         """mix the features from backbone and deconvolution architecture
                 Args:
                     down_endpoints: the dict-like extracted feature maps from backbone
                     up_endpoints: the dict-like extracted feature maps from deconvolution arichitecture
                     method: the feature merge method in net_config.py
+                    attention_module: an attention module function
                     is_training: indicates training or not
                 Return:
                     return the merge feature endpoints
@@ -190,9 +253,17 @@ class factory(object):
             for up_feat, de_feat in zip(backbone_feats, deconv_feats):
                 with tf.variable_scope("block_%d" % (i)):
                     if method == config.merge_method.CONCAT:
-                        merge_feats["layer_%d" % (i)] = tf.concat([up_feat, de_feat], axis=-1)
+                        if attention_module != None:
+                            aug_feat = attention_module(tf.concat([up_feat, de_feat], axis=-1), name="layer_%d" % (i))
+                            merge_feats["layer_%d" % (i)] = aug_feat
+                        else:
+                            merge_feats["layer_%d" % (i)] = tf.concat([up_feat, de_feat], axis=-1)
                     elif method == config.merge_method.ADD:
-                        merge_feats["layer_%d" % (i)] = up_feat + de_feat
+                        if attention_module != None:
+                            aug_feat = attention_module((up_feat + de_feat), name="layer_%d" % (i))
+                            merge_feats["layer_%d" % (i)] = aug_feat
+                        else:
+                            merge_feats["layer_%d" % (i)] = up_feat + de_feat
                     else:
                         raise ValueError('parameter "method(%s)" wrong...'%str(method))
                     i += 1
@@ -273,20 +344,28 @@ class factory(object):
             if train_range is REFINE, return refine_out
             if train_range is ALL, return refine_out, det_out, clf_out
         """
-        if self.train_range is config.train_range.ALL:
-            return self.refine_out, self.det_out, self.clf_out
-        elif self.train_range is config.train_range.REFINE:
-            return self.refine_out
+        if self.is_training:
+            if self.train_range is config.train_range.ALL:
+                return self.refine_out, self.det_out, self.clf_out
+            elif self.train_range is config.train_range.REFINE:
+                return self.refine_out
+            else:
+                raise ValueError('Error')
         else:
-            raise ValueError('Error')
+            if self.train_range is config.train_range.ALL:
+                return self.refine_out, self.det_out, self.clf_out
+            elif self.train_range is config.train_range.REFINE:
+                return self.refine_out
+            else:
+                raise ValueError('Error')
 
 if __name__ == '__main__':
     imgs = tf.placeholder(dtype=tf.float16, shape=[None, 418, 418, 3])
     config_dict = {'train_range':config.train_range.ALL,
-                   'process_backbone_method': config.process_backbone_method.NONE,
+                   'process_backbone_method': config.process_backbone_method.PREORDER_MSF,
                    'deconv_method':config.deconv_method.LEARN_HALF,
                    'merge_method':config.merge_method.ADD}
-    net = factory(inputs=imgs, backbone_name='vgg_16', is_training=True, config_dict=config_dict)
+    net = factory(inputs=imgs, backbone_name='mobilenet_v2', is_training=True, config_dict=config_dict)
     b = net.backbone_feats
     c = net.deconv_feats
     d = net.merge_feats

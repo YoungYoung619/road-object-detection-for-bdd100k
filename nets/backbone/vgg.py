@@ -42,11 +42,10 @@ from __future__ import division
 from __future__ import print_function
 
 import tensorflow as tf
-from mynets.normal import custom_layers
+from nets.backbone import custom_layers
 
 slim = tf.contrib.slim
 
-DTYPE = tf.float16
 
 def vgg_arg_scope(weight_decay=0.0005):
   """Defines the VGG arg scope.
@@ -89,70 +88,48 @@ def vgg_16(inputs,
     # Collect outputs for conv2d, fully_connected and max_pool2d.
     with slim.arg_scope([slim.conv2d, slim.batch_norm, slim.max_pool2d],
                         outputs_collections=end_points_collection,):
-      with slim.arg_scope([slim.conv2d],
-                          weights_regularizer=slim.l2_regularizer(0.0005)):
-        net = slim.repeat(inputs, 2, slim.conv2d, 64, [3, 3],
-                          normalizer_fn=slim.batch_norm,
-                          normalizer_params={'is_training': is_training,
-                                             'activation_fn':tf.nn.relu},
-                          scope='conv1')
+        net = slim.repeat(inputs, 2, slim.conv2d, 64, [3, 3], scope='conv1')
         net = slim.max_pool2d(net, [2, 2],scope='pool1')
-        net = slim.repeat(net, 2, slim.conv2d, 128, [3, 3],
-                          normalizer_fn=slim.batch_norm,
-                          normalizer_params={'is_training': is_training,
-                                             'activation_fn': tf.nn.relu},
-                          scope='conv2')
+        net = slim.repeat(net, 2, slim.conv2d, 128, [3, 3], scope='conv2')
         net = slim.max_pool2d(net, [2, 2], scope='pool2')
-        net = slim.repeat(net, 3, slim.conv2d, 256, [3, 3],
-                          normalizer_fn=slim.batch_norm,
-                          normalizer_params={'is_training': is_training,
-                                             'activation_fn': tf.nn.relu},
-                          scope='conv3')
+        net = slim.repeat(net, 3, slim.conv2d, 256, [3, 3], scope='conv3')
         net = slim.max_pool2d(net, [2, 2], scope='pool3')
-        net = slim.repeat(net, 3, slim.conv2d, 512, [3, 3],
-                          normalizer_fn=slim.batch_norm,
-                          normalizer_params={'is_training': is_training,
-                                             'activation_fn': tf.nn.relu},
-                          scope='conv4')
+        net = slim.repeat(net, 3, slim.conv2d, 512, [3, 3], scope='conv4')
         net = slim.max_pool2d(net, [2, 2], scope='pool4')
-        net = slim.repeat(net, 3, slim.conv2d, 512, [3, 3],
-                          normalizer_fn=slim.batch_norm,
-                          normalizer_params={'is_training': is_training,
-                                             'activation_fn': tf.nn.relu},
-                          scope='conv5')
+        net = slim.repeat(net, 3, slim.conv2d, 512, [3, 3], scope='conv5')
         net = slim.max_pool2d(net, [2, 2], scope='pool5')
 
         ## additional layer for ssd ##
         with tf.variable_scope('block6'):
-          net = slim.conv2d(net, 1024, [3, 3], activation_fn=None, scope='conv6_a')
-          net = slim.batch_norm(net, is_training=is_training, activation_fn=tf.nn.relu, scope='conv6')
+          net = slim.conv2d(net, 1024, [3, 3], activation_fn=tf.nn.relu, scope='conv6')
+          # net = slim.batch_norm(net, is_training=is_training, activation_fn=tf.nn.relu, scope='conv6')
           net = tf.layers.dropout(net, rate=dropout_keep_prob, training=is_training)
 
         with tf.variable_scope('block7'):
-          net = slim.conv2d(net, 1024, [1, 1], activation_fn=None, scope='conv7_a')
-          net = slim.batch_norm(net, is_training=is_training, activation_fn=tf.nn.relu, scope='conv7')
+          net = slim.conv2d(net, 1024, [1, 1], activation_fn=tf.nn.relu, scope='conv7')
+          # net = slim.batch_norm(net, is_training=is_training, activation_fn=tf.nn.relu, scope='conv7')
           net = tf.layers.dropout(net, rate=dropout_keep_prob, training=is_training)
 
         with tf.variable_scope('block8'):
-          net = slim.conv2d(net, 256, [1, 1], activation_fn=None, scope='conv1x1_a')
-          net = slim.batch_norm(net, is_training=is_training, activation_fn=tf.nn.relu, scope='conv1x1')
+          net = slim.conv2d(net, 256, [1, 1], activation_fn=tf.nn.relu, scope='conv1x1')
+          # net = slim.batch_norm(net, is_training=is_training, activation_fn=tf.nn.relu, scope='conv1x1')
           net = custom_layers.pad2d(net, pad=(1, 1))
-          net = slim.conv2d(net, 512, [3, 3], stride=2, activation_fn=None, scope='conv3x3_a', padding='VALID')
-          net = slim.batch_norm(net, is_training=is_training, activation_fn=tf.nn.relu, scope='conv3x3')
+          net = slim.conv2d(net, 512, [3, 3], stride=2, activation_fn=tf.nn.relu, scope='conv3x3', padding='VALID')
+          # net = slim.batch_norm(net, is_training=is_training, activation_fn=tf.nn.relu, scope='conv3x3')
 
         with tf.variable_scope('block9'):
-          net = slim.conv2d(net, 128, [1, 1], scope='conv1x1_a')
-          net = slim.batch_norm(net, is_training=is_training, activation_fn=tf.nn.relu, scope='conv1x1')
+          net = slim.conv2d(net, 128, [1, 1], scope='conv1x1')
+          # net = slim.batch_norm(net, is_training=is_training, activation_fn=tf.nn.relu, scope='conv1x1')
           net = custom_layers.pad2d(net, pad=(1, 1))
-          net = slim.conv2d(net, 256, [3, 3], stride=2, activation_fn=None, scope='conv3x3_a', padding='VALID')
-          net = slim.batch_norm(net, is_training=is_training, activation_fn=tf.nn.relu, scope='conv3x3')
+          net = slim.conv2d(net, 256, [3, 3], stride=2, activation_fn=tf.nn.relu, scope='conv3x3', padding='VALID')
+          # net = slim.batch_norm(net, is_training=is_training, activation_fn=tf.nn.relu, scope='conv3x3')
 
         with tf.variable_scope('block10'):
-          net = slim.conv2d(net, 128, [1, 1], activation_fn=None, scope='conv1x1_a')
-          net = slim.batch_norm(net, is_training=is_training, activation_fn=tf.nn.relu, scope='conv1x1')
+          net = slim.conv2d(net, 128, [1, 1], activation_fn=tf.nn.relu, scope='conv1x1')
+          # net = slim.batch_norm(net, is_training=is_training, activation_fn=tf.nn.relu, scope='conv1x1')
           #net = custom_layers.pad2d(net, pad=(1, 1))
-          net = slim.conv2d(net, 256, [3, 3], stride=1, activation_fn=None, scope='conv3x3_a', padding='VALID')
-          net = slim.batch_norm(net, is_training=is_training, activation_fn=tf.nn.relu, scope='conv3x3')
+          net = slim.conv2d(net, 256, [3, 3], stride=1, activation_fn=tf.nn.relu, scope='conv3x3', padding='VALID')
+          # net = slim.batch_norm(net, is_training=is_training, activation_fn=tf.nn.relu, scope='conv3x3')
 
 
         end_points = slim.utils.convert_collection_to_dict(end_points_collection)
