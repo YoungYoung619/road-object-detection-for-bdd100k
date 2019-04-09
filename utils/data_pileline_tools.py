@@ -14,7 +14,34 @@ import config
 from utils.augmentation import process
 from utils.augmentation import tf_image
 
-### train data pileline func###
+### data pileline func###
+def prepare_data_test(dataset, num_readers, batch_size, shuffle):
+    """prepare batch data for training
+    Args:
+        dataset: should be a slim.dataset.Dataset
+    Return:
+        A tensor represents one img with specific height and width
+        A tensor represents corresponding bboxes, value is in [0.，1.],
+            shape is (?，4) means(ymin,xmin,ymax,xmax)
+        A tensor represents corresponding labels, shape is (?)
+    """
+    # create a data provider #
+    with tf.name_scope('data_provider'):
+        provider = slim.dataset_data_provider.DatasetDataProvider(dataset, num_readers=num_readers,
+                                                                  common_queue_capacity=5 * batch_size,
+                                                                  common_queue_min=3 * batch_size,
+                                                                  shuffle=shuffle)
+    # Get for network: image, labels, bboxes.
+    [image, shape, glabels, gbboxes] = provider.get(['image', 'shape',
+                                                     'object/label',
+                                                     'object/bbox'])
+
+    dst_image = tf_image.resize_image(image, config.img_size, method=tf.image.ResizeMethod.BILINEAR,
+                                      align_corners=False)
+
+    return dst_image, glabels, gbboxes
+
+
 def prepare_data_train(dataset, num_readers, batch_size, shuffle):
     """prepare batch data for training
     Args:

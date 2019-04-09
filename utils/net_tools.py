@@ -3,7 +3,7 @@ Copyright (c) College of Mechatronics and Control Engineering, Shenzhen Universi
 All rights reserved.
 
 Description :
-some general functions
+some general functions to train, predict, eval net.
 
 Author：Team Li
 """
@@ -16,6 +16,7 @@ import tensorflow as tf
 slim = tf.contrib.slim
 
 from utils.common_tools import *
+import utils.tf_extended as tfe
 
 def init_anchor(n_layers):
     """produce the initial anchor
@@ -119,6 +120,7 @@ def anchors_one_layer(img_shape, feat_shape, anchors_one_layer, dtype=np.float32
 
     return y_center.astype(dtype), x_center.astype(dtype), \
            height.astype(dtype), width.astype(dtype)
+
 
 def anchors_all_layer(img_shape, feats_shape, anchors_all_layer):
     """produce the coordinate of all anchors in all layer
@@ -485,7 +487,7 @@ def smooth_l1(x):
     return r
 
 
-def refine_loss(refine_out, refine_groundtruth, refine_pos_mask, dtype=tf.float16):
+def refine_loss(refine_out, refine_groundtruth, refine_pos_mask, dtype=tf.float32):
     """get loss of refine net
     Args:
         refine_out: a list of refine out in all layers.
@@ -525,80 +527,87 @@ def det_clf_loss(refine_out, clf_out, det_out, det_groundtruth, det_pos_mask, de
         detection_loss: represents the loss of offset from refine anchor to groundtruth
         classifition_loss: represents the loss of classification
     """
-    bs = tf.cast(tf.shape(refine_out[0])[0], dtype=dtype)
+    with tf.name_scope("det_clf_loss_process"):
+        bs = tf.cast(tf.shape(refine_out[0])[0], dtype=dtype)
 
-    ## process det loss ##
-    pos_num_all_layers = []
-    with tf.name_scope("det_loss_process"):
-        det_loss = 0.
-        i = 0
+        ## process det loss ##
+        pos_num_all_layers = []
+        with tf.name_scope("det_loss_process"):
+            det_loss = 0.
+            i = 0
 
-        for y, x, m in zip(det_groundtruth, det_out, det_pos_mask):
-            m = tf.cast(m, dtype=dtype)
-            pos_num_one_layer = tf.reduce_sum(m)
-            pos_num_all_layers.append(pos_num_one_layer / bs)
-            tf.summary.scalar("layer_%d"%(i+1),pos_num_one_layer / bs)
-            val = smooth_l1((y - x) * m)
-            det_loss += tf.reduce_sum(val) / bs
-            i += 1
+            for y, x, m in zip(det_groundtruth, det_out, det_pos_mask):
+                m = tf.cast(m, dtype=dtype)
+                pos_num_one_layer = tf.reduce_sum(m)
+                pos_num_all_layers.append(pos_num_one_layer / bs)
+                tf.summary.scalar("layer_%d_pos_num"%(i+1),pos_num_one_layer / bs)
+                val = smooth_l1((y - x) * m)
+                det_loss += tf.reduce_sum(val) / bs
+                i += 1
 
-    ## process clf loss ##
-    with tf.name_scope("clf_loss_process"):
-        # Flatten out all vectors!
-        flogits = []
-        fgclasses = []
-        fpmask = []
-        for labels, logits, m in zip(det_labels, clf_out, det_pos_mask):
-            flogits.append(tf.reshape(logits, [-1, config.total_obj_n]))
-            fgclasses.append(tf.reshape(labels, [-1]))
-            fpmask.append(tf.reshape(m, [-1]))
+        ## process clf loss ##
+        with tf.name_scope("clf_loss_process"):
+            # Flatten out all vectors!
+            flogits = []
+            fgclasses = []
+            fpmask = []
+            for labels, logits, m in zip(det_labels, clf_out, det_pos_mask):
+                flogits.append(tf.reshape(logits, [-1, config.total_obj_n]))
+                fgclasses.append(tf.reshape(labels, [-1]))
+                fpmask.append(tf.reshape(m, [-1]))
 
-        logits = tf.concat(flogits, axis=0)
-        gclasses = tf.concat(fgclasses, axis=0)
-        pmask = tf.cast(tf.concat(fpmask, axis=0), tf.bool)
-        fpmask = tf.cast(pmask, dtype)
+            logits = tf.concat(flogits, axis=0)
+            gclasses = tf.concat(fgclasses, axis=0)
+            pmask = tf.cast(tf.concat(fpmask, axis=0), tf.bool)
+            fpmask = tf.cast(pmask, dtype)
 
-        n_positives = tf.reduce_sum(tf.cast(pmask, dtype))## positive num
+            n_positives = tf.reduce_sum(tf.cast(pmask, dtype))## positive num
 
-        # Hard negative mining...
-        no_classes = tf.cast(pmask, tf.int32)
-        predictions = slim.softmax(logits)
-        nmask = tf.logical_not(pmask)
-        fnmask = tf.cast(nmask, dtype)
+            # Hard negative mining...
+            no_classes = tf.cast(pmask, tf.int32)
+            predictions = slim.softmax(logits)
+            nmask = tf.logical_not(pmask)
+            fnmask = tf.cast(nmask, dtype)
 
-        nvalues = tf.where(nmask, predictions[:, 0], 1. - fnmask)
+            nvalues = tf.where(nmask, predictions[:, 0], 1. - fnmask)
 
-        # Number of negative entries to select.
-        negative_ratio = 3.
-        max_neg_entries = tf.cast(tf.reduce_sum(fnmask), tf.int32)
-        n_neg = tf.cast(negative_ratio * n_positives, tf.int32) + tf.cast(bs, dtype=tf.int32)
-        n_neg = tf.minimum(n_neg, max_neg_entries)
+            # Number of negative entries to select.
+            negative_ratio = 3.
+            max_neg_entries = tf.cast(tf.reduce_sum(fnmask), tf.int32)
+            n_neg = tf.cast(negative_ratio * n_positives, tf.int32) + tf.cast(bs, dtype=tf.int32)
+            n_neg = tf.minimum(n_neg, max_neg_entries)
 
-        val, idxes = tf.nn.top_k(-nvalues, k=n_neg)
-        max_hard_pred = -val[-1]
-        tf.summary.scalar("max hard predition", max_hard_pred) ## the bigger, the better
-        # Final negative mask.
-        nmask = tf.logical_and(nmask, nvalues < max_hard_pred)
-        fnmask = tf.cast(nmask, dtype)
+            val, idxes = tf.nn.top_k(-nvalues, k=n_neg)
+            max_hard_pred = -val[-1]
+            tf.summary.scalar("max hard predition", max_hard_pred) ## the bigger, the better
+            # Final negative mask.
+            nmask = tf.logical_and(nmask, nvalues < max_hard_pred)
+            fnmask = tf.cast(nmask, dtype)
 
-        with tf.name_scope('cross_entropy_pos'):
-            clf_weights = np.array([1., 50., 4., 3., 8., 50., 20.,50., 1., 50., 50.])/280.
-            gclasses = tf.one_hot(gclasses, config.total_obj_n)*clf_weights
-            pos_loss = tf.nn.softmax_cross_entropy_with_logits(logits=logits,
-                                                                labels=gclasses)
-            pos_loss = tf.div(tf.reduce_sum(pos_loss * fpmask), bs, name='value')
+            with tf.name_scope('cross_entropy_pos'):
+                ## focal loss
+                focal_factor = tf.square(tf.one_hot(gclasses, config.total_obj_n)*(1. - slim.softmax(logits)))
+                pos_loss = tf.nn.softmax_cross_entropy_with_logits(logits=logits,
+                                                                    labels=focal_factor)
+                pos_loss = tf.div(tf.reduce_sum(pos_loss * fpmask), bs, name='value')
 
-        with tf.name_scope('cross_entropy_neg'):
-            neg_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=logits,
-                                                                          labels=no_classes)
-            neg_loss = tf.div(tf.reduce_sum(neg_loss * fnmask), bs, name='value')
+            with tf.name_scope('cross_entropy_neg'):
+                neg_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=logits,
+                                                                              labels=no_classes)
+                neg_loss = tf.div(tf.reduce_sum(neg_loss * fnmask), bs, name='value')
 
-        clf_loss = neg_loss + pos_loss
+            clf_loss = neg_loss + pos_loss
 
-    return det_loss, clf_loss
+        tf.summary.scalar('det_loss', det_loss)
+        tf.summary.scalar('neg_loss', neg_loss)
+        tf.summary.scalar('pos_loss', pos_loss)
+        tf.summary.scalar('clf_loss', clf_loss)
+        tf.summary.scalar('total_loss', clf_loss + det_loss)
+
+        return det_loss, clf_loss
 
 
-def optimizer(loss, global_step, learning_rate=1e-3, var_list=None):
+def optimizer(loss, global_step, batch_szie, learning_rate=1e-3, var_list=None, fix_learning_rate=True):
     """build a optimizer to updata the weights
     Args:
         loss: a tensor reprensents the total loss
@@ -607,12 +616,16 @@ def optimizer(loss, global_step, learning_rate=1e-3, var_list=None):
         a ops to updata the weights
     """
     # configure the learning rate#
-    # learning_rate = tf.train.exponential_decay(self.__learningRate, self.__global_step_tensor,
-    #                                            2 * self.__samplesNum / self.__batchSize, 0.94, staircase=True)
-
+    if fix_learning_rate:
+        l_rate = learning_rate
+    else:
+        l_rate = tf.train.exponential_decay(learning_rate, global_step,
+                                                70000 / batch_szie,
+                                                0.97, staircase=True)
+        tf.summary.scalar('learning_rate', l_rate)
     update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
     with tf.control_dependencies(update_ops):
-        optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate, epsilon=1e-8)
+        optimizer = tf.train.AdamOptimizer(learning_rate=l_rate, epsilon=1e-8)
         #optimizer = tf.train.GradientDescentOptimizer(learning_rate=learning_rate)
         grads_and_vars = optimizer.compute_gradients(loss, var_list=var_list)
 
@@ -620,10 +633,461 @@ def optimizer(loss, global_step, learning_rate=1e-3, var_list=None):
         capped_gvs = [(tf.clip_by_value(grad, -5., 5.), var)
                         for grad, var in grads_and_vars]
         training_op = optimizer.apply_gradients(capped_gvs, global_step=global_step)
+        # training_op = optimizer.minimize(loss, global_step=global_step, var_list=var_list)
 
     return training_op
 
 
+## nms ##
+def bboxes_select_one_layer(predictions_layer, localizations_layer,
+                            select_threshold=None, num_classes=21,
+                            ignore_class=0, scope=None):
+    """Extract classes, scores and bounding boxes from features in one layer.
+    Batch-compatible: inputs are supposed to have batch-type shapes.
+
+    Args:
+        predictions_layer: A SSD prediction layer;
+        localizations_layer: A SSD localization layer;
+        select_threshold: Classification threshold for selecting a box. All boxes
+            under the threshold are set to 'zero'. If None, no threshold applied.
+    Return:
+        d_scores, d_bboxes: Dictionary of scores and bboxes Tensors of
+        size Batches X N x 1 | 4. Each key corresponding to a class.
+    """
+    select_threshold = 0.0 if select_threshold is None else select_threshold
+    with tf.name_scope(scope, 'bboxes_select_layer',
+                        [predictions_layer, localizations_layer]):
+        # Reshape features: Batches x N x N_labels | 4
+        p_shape = tfe.get_shape(predictions_layer)
+        predictions_layer = tf.reshape(predictions_layer,
+                                        tf.stack([p_shape[0], -1, p_shape[-1]]))
+        l_shape = tfe.get_shape(localizations_layer)
+        localizations_layer = tf.reshape(localizations_layer,
+                                            tf.stack([l_shape[0], -1, l_shape[-1]]))
+
+        d_scores = {}
+        d_bboxes = {}
+        for c in range(0, num_classes):
+            if c != ignore_class:
+                # Remove boxes under the threshold.
+                scores = predictions_layer[:, :, c]
+                fmask = tf.cast(tf.greater_equal(scores, select_threshold), scores.dtype)
+                scores = scores * fmask
+                bboxes = localizations_layer * tf.expand_dims(fmask, axis=-1)
+                # Append to dictionary.
+                d_scores[c] = scores
+                d_bboxes[c] = bboxes
+
+        return d_scores, d_bboxes
+
+
+def bboxes_select_all_layers(predictions_net, localizations_net,
+                             select_threshold=None,
+                             num_classes=21,
+                             ignore_class=0,
+                             scope=None):
+    """Extract classes, scores and bounding boxes from network output layers.
+    Batch-compatible: inputs are supposed to have batch-type shapes.
+    Args:
+        predictions_net: List of SSD prediction layers;
+        localizations_net: List of localization layers;
+        select_threshold: Classification threshold for selecting a box. All boxes
+            under the threshold are set to 'zero'. If None, no threshold applied.
+    Return:
+        d_scores, d_bboxes: Dictionary of scores and bboxes Tensors of
+        size Batches X N x 1 | 4. Each key corresponding to a class.
+    """
+    with tf.name_scope(scope, 'bboxes_select',
+                           [predictions_net, localizations_net]):
+        l_scores = []
+        l_bboxes = []
+        for i in range(len(predictions_net)):
+            scores, bboxes = bboxes_select_one_layer(predictions_net[i],
+                                                     localizations_net[i],
+                                                     select_threshold,
+                                                     num_classes,
+                                                     ignore_class)
+            l_scores.append(scores)
+            l_bboxes.append(bboxes)
+        # Concat results.
+        d_scores = {}
+        d_bboxes = {}
+        for c in l_scores[0].keys():
+            ls = [s[c] for s in l_scores]
+            lb = [b[c] for b in l_bboxes]
+            d_scores[c] = tf.concat(ls, axis=1)
+            d_bboxes[c] = tf.concat(lb, axis=1)
+        return d_scores, d_bboxes
+
+
+def detected_bboxes(predictions, localisations,
+                    select_threshold=None, nms_threshold=0.5,
+                    clipping_bbox=None, top_k=800, keep_top_k=200):
+    """Get the detected bounding boxes from the SSD network output.
+    """
+    # Select top_k bboxes from predictions, and clip
+    rscores, rbboxes = \
+        bboxes_select_all_layers(predictions, localisations,
+                                 select_threshold=select_threshold,
+                                 num_classes=config.total_obj_n)
+    rscores, rbboxes = \
+        tfe.bboxes_sort(rscores, rbboxes, top_k=top_k)
+    # Apply NMS algorithm.
+    rscores, rbboxes = \
+        tfe.bboxes_nms_batch(rscores, rbboxes,
+                             nms_threshold=nms_threshold,
+                             keep_top_k=keep_top_k)
+    if clipping_bbox is not None:
+        rbboxes = tfe.bboxes_clip(clipping_bbox, rbboxes)
+    return rscores, rbboxes
+
+
+########## for vis ############
+import PIL.Image as Image
+import PIL.ImageColor as ImageColor
+import PIL.ImageDraw as ImageDraw
+import PIL.ImageFont as ImageFont
+import collections
+
+STANDARD_COLORS = [
+    'AliceBlue', 'Chartreuse', 'Aqua', 'Aquamarine', 'Azure', 'Beige', 'Bisque',
+    'BlanchedAlmond', 'BlueViolet', 'BurlyWood', 'CadetBlue', 'AntiqueWhite',
+    'Chocolate', 'Coral', 'CornflowerBlue', 'Cornsilk', 'Crimson', 'Cyan',
+    'DarkCyan', 'DarkGoldenRod', 'DarkGrey', 'DarkKhaki', 'DarkOrange',
+    'DarkOrchid', 'DarkSalmon', 'DarkSeaGreen', 'DarkTurquoise', 'DarkViolet',
+    'DeepPink', 'DeepSkyBlue', 'DodgerBlue', 'FireBrick', 'FloralWhite',
+    'ForestGreen', 'Fuchsia', 'Gainsboro', 'GhostWhite', 'Gold', 'GoldenRod',
+    'Salmon', 'Tan', 'HoneyDew', 'HotPink', 'IndianRed', 'Ivory', 'Khaki',
+    'Lavender', 'LavenderBlush', 'LawnGreen', 'LemonChiffon', 'LightBlue',
+    'LightCoral', 'LightCyan', 'LightGoldenRodYellow', 'LightGray', 'LightGrey',
+    'LightGreen', 'LightPink', 'LightSalmon', 'LightSeaGreen', 'LightSkyBlue',
+    'LightSlateGray', 'LightSlateGrey', 'LightSteelBlue', 'LightYellow', 'Lime',
+    'LimeGreen', 'Linen', 'Magenta', 'MediumAquaMarine', 'MediumOrchid',
+    'MediumPurple', 'MediumSeaGreen', 'MediumSlateBlue', 'MediumSpringGreen',
+    'MediumTurquoise', 'MediumVioletRed', 'MintCream', 'MistyRose', 'Moccasin',
+    'NavajoWhite', 'OldLace', 'Olive', 'OliveDrab', 'Orange', 'OrangeRed',
+    'Orchid', 'PaleGoldenRod', 'PaleGreen', 'PaleTurquoise', 'PaleVioletRed',
+    'PapayaWhip', 'PeachPuff', 'Peru', 'Pink', 'Plum', 'PowderBlue', 'Purple',
+    'Red', 'RosyBrown', 'RoyalBlue', 'SaddleBrown', 'Green', 'SandyBrown',
+    'SeaGreen', 'SeaShell', 'Sienna', 'Silver', 'SkyBlue', 'SlateBlue',
+    'SlateGray', 'SlateGrey', 'Snow', 'SpringGreen', 'SteelBlue', 'GreenYellow',
+    'Teal', 'Thistle', 'Tomato', 'Turquoise', 'Violet', 'Wheat', 'White',
+    'WhiteSmoke', 'Yellow', 'YellowGreen'
+]
+
+def draw_bounding_box_on_image_array(image,
+                                     ymin,
+                                     xmin,
+                                     ymax,
+                                     xmax,
+                                     color='red',
+                                     thickness=4,
+                                     display_str_list=(),
+                                     use_normalized_coordinates=True):
+  """Adds a bounding box to an image (numpy array).
+  Bounding box coordinates can be specified in either absolute (pixel) or
+  normalized coordinates by setting the use_normalized_coordinates argument.
+  Args:
+    image: a numpy array with shape [height, width, 3].
+    ymin: ymin of bounding box.
+    xmin: xmin of bounding box.
+    ymax: ymax of bounding box.
+    xmax: xmax of bounding box.
+    color: color to draw bounding box. Default is red.
+    thickness: line thickness. Default value is 4.
+    display_str_list: list of strings to display in box
+                      (each to be shown on its own line).
+    use_normalized_coordinates: If True (default), treat coordinates
+      ymin, xmin, ymax, xmax as relative to the image.  Otherwise treat
+      coordinates as absolute.
+  """
+  image_pil = Image.fromarray(np.uint8(image)).convert('RGB')
+  draw_bounding_box_on_image(image_pil, ymin, xmin, ymax, xmax, color,
+                             thickness, display_str_list,
+                             use_normalized_coordinates)
+  np.copyto(image, np.array(image_pil))
+  return image
+
+
+def draw_bounding_box_on_image(image,
+                               ymin,
+                               xmin,
+                               ymax,
+                               xmax,
+                               color='red',
+                               thickness=4,
+                               display_str_list=(),
+                               use_normalized_coordinates=True):
+  """Adds a bounding box to an image.
+  Bounding box coordinates can be specified in either absolute (pixel) or
+  normalized coordinates by setting the use_normalized_coordinates argument.
+  Each string in display_str_list is displayed on a separate line above the
+  bounding box in black text on a rectangle filled with the input 'color'.
+  If the top of the bounding box extends to the edge of the image, the strings
+  are displayed below the bounding box.
+  Args:
+    image: a PIL.Image object.
+    ymin: ymin of bounding box.
+    xmin: xmin of bounding box.
+    ymax: ymax of bounding box.
+    xmax: xmax of bounding box.
+    color: color to draw bounding box. Default is red.
+    thickness: line thickness. Default value is 4.
+    display_str_list: list of strings to display in box
+                      (each to be shown on its own line).
+    use_normalized_coordinates: If True (default), treat coordinates
+      ymin, xmin, ymax, xmax as relative to the image.  Otherwise treat
+      coordinates as absolute.
+  """
+  draw = ImageDraw.Draw(image)
+  im_width, im_height = image.size
+  if use_normalized_coordinates:
+    (left, right, top, bottom) = (xmin * im_width, xmax * im_width,
+                                  ymin * im_height, ymax * im_height)
+  else:
+    (left, right, top, bottom) = (xmin, xmax, ymin, ymax)
+  draw.line([(left, top), (left, bottom), (right, bottom),
+             (right, top), (left, top)], width=thickness, fill=color)
+  try:
+    font = ImageFont.truetype('arial.ttf', 24)
+  except IOError:
+    font = ImageFont.load_default()
+
+  # If the total height of the display strings added to the top of the bounding
+  # box exceeds the top of the image, stack the strings below the bounding box
+  # instead of above.
+  display_str_heights = [font.getsize(ds)[1] for ds in display_str_list]
+  # Each display_str has a top and bottom margin of 0.05x.
+  total_display_str_height = (1 + 2 * 0.05) * sum(display_str_heights)
+
+  if top > total_display_str_height:
+    text_bottom = top
+  else:
+    text_bottom = bottom + total_display_str_height
+  # Reverse list and print from bottom to top.
+  for display_str in display_str_list[::-1]:
+    text_width, text_height = font.getsize(display_str)
+    margin = np.ceil(0.05 * text_height)
+    draw.rectangle(
+        [(left, text_bottom - text_height - 2 * margin), (left + text_width,
+                                                          text_bottom)],
+        fill=color)
+    draw.text(
+        (left + margin, text_bottom - text_height - margin),
+        display_str,
+        fill='black',
+        font=font)
+    text_bottom -= text_height - 2 * margin
+
+
+def draw_mask_on_image_array(image, mask, color='red', alpha=0.4):
+  """Draws mask on an image.
+  Args:
+    image: uint8 numpy array with shape (img_height, img_height, 3)
+    mask: a uint8 numpy array of shape (img_height, img_height) with
+      values between either 0 or 1.
+    color: color to draw the keypoints with. Default is red.
+    alpha: transparency value between 0 and 1. (default: 0.4)
+  Raises:
+    ValueError: On incorrect data type for image or masks.
+  """
+  if image.dtype != np.uint8:
+    raise ValueError('`image` not of type np.uint8')
+  if mask.dtype != np.uint8:
+    raise ValueError('`mask` not of type np.uint8')
+  if np.any(np.logical_and(mask != 1, mask != 0)):
+    raise ValueError('`mask` elements should be in [0, 1]')
+  if image.shape[:2] != mask.shape:
+    raise ValueError('The image has spatial dimensions %s but the mask has '
+                     'dimensions %s' % (image.shape[:2], mask.shape))
+  rgb = ImageColor.getrgb(color)
+  pil_image = Image.fromarray(image)
+
+  solid_color = np.expand_dims(
+      np.ones_like(mask), axis=2) * np.reshape(list(rgb), [1, 1, 3])
+  pil_solid_color = Image.fromarray(np.uint8(solid_color)).convert('RGBA')
+  pil_mask = Image.fromarray(np.uint8(255.0*alpha*mask)).convert('L')
+  pil_image = Image.composite(pil_solid_color, pil_image, pil_mask)
+  np.copyto(image, np.array(pil_image.convert('RGB')))
+
+
+def draw_keypoints_on_image(image,
+                            keypoints,
+                            color='red',
+                            radius=2,
+                            use_normalized_coordinates=True):
+  """Draws keypoints on an image.
+  Args:
+    image: a PIL.Image object.
+    keypoints: a numpy array with shape [num_keypoints, 2].
+    color: color to draw the keypoints with. Default is red.
+    radius: keypoint radius. Default value is 2.
+    use_normalized_coordinates: if True (default), treat keypoint values as
+      relative to the image.  Otherwise treat them as absolute.
+  """
+  draw = ImageDraw.Draw(image)
+  im_width, im_height = image.size
+  keypoints_x = [k[1] for k in keypoints]
+  keypoints_y = [k[0] for k in keypoints]
+  if use_normalized_coordinates:
+    keypoints_x = tuple([im_width * x for x in keypoints_x])
+    keypoints_y = tuple([im_height * y for y in keypoints_y])
+  for keypoint_x, keypoint_y in zip(keypoints_x, keypoints_y):
+    draw.ellipse([(keypoint_x - radius, keypoint_y - radius),
+                  (keypoint_x + radius, keypoint_y + radius)],
+                 outline=color, fill=color)
+
+
+def draw_keypoints_on_image_array(image,
+                                  keypoints,
+                                  color='red',
+                                  radius=2,
+                                  use_normalized_coordinates=True):
+  """Draws keypoints on an image (numpy array).
+  Args:
+    image: a numpy array with shape [height, width, 3].
+    keypoints: a numpy array with shape [num_keypoints, 2].
+    color: color to draw the keypoints with. Default is red.
+    radius: keypoint radius. Default value is 2.
+    use_normalized_coordinates: if True (default), treat keypoint values as
+      relative to the image.  Otherwise treat them as absolute.
+  """
+  image_pil = Image.fromarray(np.uint8(image)).convert('RGB')
+  draw_keypoints_on_image(image_pil, keypoints, color, radius,
+                          use_normalized_coordinates)
+  np.copyto(image, np.array(image_pil))
+
+
+def visualize_boxes_and_labels_on_image_array(
+    image,
+    boxes,
+    classes,
+    scores,
+    category_index,
+    instance_masks=None,
+    instance_boundaries=None,
+    keypoints=None,
+    use_normalized_coordinates=True,
+    max_boxes_to_draw=40,
+    min_score_thresh=.2,
+    agnostic_mode=False,
+    line_thickness=3,
+    groundtruth_box_visualization_color='red',
+    skip_scores=False,
+    skip_labels=False):
+  """Overlay labeled boxes on an image with formatted scores and label names.
+  This function groups boxes that correspond to the same location
+  and creates a display string for each detection and overlays these
+  on the image. Note that this function modifies the image in place, and returns
+  that same image.
+  Args:
+    image: uint8 numpy array with shape (img_height, img_width, 3)
+    boxes: a numpy array of shape [N, 4]
+    classes: a numpy array of shape [N]. Note that class indices are 1-based,
+      and match the keys in the label map.
+    scores: a numpy array of shape [N] or None.  If scores=None, then
+      this function assumes that the boxes to be plotted are groundtruth
+      boxes and plot all boxes as black with no classes or scores.
+    category_index: a dict containing category dictionaries (each holding
+      category index `id` and category name `name`) keyed by category indices.
+    instance_masks: a numpy array of shape [N, image_height, image_width] with
+      values ranging between 0 and 1, can be None.
+    instance_boundaries: a numpy array of shape [N, image_height, image_width]
+      with values ranging between 0 and 1, can be None.
+    keypoints: a numpy array of shape [N, num_keypoints, 2], can
+      be None
+    use_normalized_coordinates: whether boxes is to be interpreted as
+      normalized coordinates or not.
+    max_boxes_to_draw: maximum number of boxes to visualize.  If None, draw
+      all boxes.
+    min_score_thresh: minimum score threshold for a box to be visualized
+    agnostic_mode: boolean (default: False) controlling whether to evaluate in
+      class-agnostic mode or not.  This mode will display scores but ignore
+      classes.
+    line_thickness: integer (default: 4) controlling line width of the boxes.
+    groundtruth_box_visualization_color: box color for visualizing groundtruth
+      boxes
+    skip_scores: whether to skip score when drawing a single detection
+    skip_labels: whether to skip label when drawing a single detection
+  Returns:
+    uint8 numpy array with shape (img_height, img_width, 3) with overlaid boxes.
+  """
+  # Create a display string (and color) for every box location, group any boxes
+  # that correspond to the same location.
+  box_to_display_str_map = collections.defaultdict(list)
+  box_to_color_map = collections.defaultdict(str)
+  box_to_instance_masks_map = {}
+  box_to_instance_boundaries_map = {}
+  box_to_keypoints_map = collections.defaultdict(list)
+  if not max_boxes_to_draw:
+    max_boxes_to_draw = boxes.shape[0]
+  for i in range(min(max_boxes_to_draw, boxes.shape[0])):
+    if scores is None or scores[i] > min_score_thresh:
+      box = tuple(boxes[i].tolist())
+      if instance_masks is not None:
+        box_to_instance_masks_map[box] = instance_masks[i]
+      if instance_boundaries is not None:
+        box_to_instance_boundaries_map[box] = instance_boundaries[i]
+      if keypoints is not None:
+        box_to_keypoints_map[box].extend(keypoints[i])
+      if scores is None:
+        box_to_color_map[box] = groundtruth_box_visualization_color
+      else:
+        display_str = ''
+        if not skip_labels:
+          if not agnostic_mode:
+            if classes[i] in category_index.keys():
+              class_name = category_index[classes[i]]['name']
+            else:
+              class_name = 'N/A'
+            display_str = str(class_name)
+        if not skip_scores:
+          if not display_str:
+            display_str = '{}%'.format(int(100*scores[i]))
+          else:
+            display_str = '{}: {}%'.format(display_str, int(100*scores[i]))
+        box_to_display_str_map[box].append(display_str)
+        if agnostic_mode:
+          box_to_color_map[box] = 'DarkOrange'
+        else:
+          box_to_color_map[box] = STANDARD_COLORS[
+              classes[i] % len(STANDARD_COLORS)]
+
+  # Draw all boxes onto image.
+  for box, color in box_to_color_map.items():
+    ymin, xmin, ymax, xmax = box
+    if instance_masks is not None:
+      draw_mask_on_image_array(
+          image,
+          box_to_instance_masks_map[box],
+          color=color
+      )
+    if instance_boundaries is not None:
+      draw_mask_on_image_array(
+          image,
+          box_to_instance_boundaries_map[box],
+          color='red',
+          alpha=1.0
+      )
+    draw_bounding_box_on_image_array(
+        image,
+        ymin,
+        xmin,
+        ymax,
+        xmax,
+        color=color,
+        thickness=line_thickness,
+        display_str_list=box_to_display_str_map[box],
+        use_normalized_coordinates=use_normalized_coordinates)
+    if keypoints is not None:
+      draw_keypoints_on_image_array(
+          image,
+          box_to_keypoints_map[box],
+          color=color,
+          radius=line_thickness / 2,
+          use_normalized_coordinates=use_normalized_coordinates)
+
+  return image
 if __name__ == '__main__':
     # a = init_anchor(6)
     # b = init_anchor.anchor_info

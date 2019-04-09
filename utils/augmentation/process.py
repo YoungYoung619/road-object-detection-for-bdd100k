@@ -1,6 +1,6 @@
 import tensorflow as tf
 from tensorflow.python.ops import control_flow_ops
-import tf_extended as tfe
+import utils.tf_extended as tfe
 import random
 
 BBOX_CROP_OVERLAP = 0.3     # Minimum overlap to keep a bbox after cropping.
