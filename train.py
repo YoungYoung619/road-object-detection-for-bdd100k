@@ -30,7 +30,7 @@ tf.app.flags.DEFINE_string(
 tf.app.flags.DEFINE_float('learning_rate', 1e-2, 'Initial learning rate.')
 
 tf.app.flags.DEFINE_integer(
-    'batch_size', 30, 'The number of samples in each batch.')
+    'batch_size', 20, 'The number of samples in each batch.')
 
 tf.app.flags.DEFINE_integer(
     'num_readers', 4,
@@ -45,7 +45,7 @@ tf.app.flags.DEFINE_string(
     'checkpoint(for all net) full name from which to fine-tune.')
 
 tf.app.flags.DEFINE_string(
-    'checkpoint_refine', 'checkpoint/mobilenet_v2.model',
+    'checkpoint_refine', 'checkpoint/refine/vgg_mbn_none/mobilenet_v2.model',
     'checkpoint(for all net) full name from which to fine-tune.')
 
 tf.app.flags.DEFINE_string(
@@ -74,18 +74,7 @@ tf.app.flags.DEFINE_integer(
 tf.app.flags.DEFINE_boolean(
     'fix_refine', True,
     'whether fix refine net')
-#
-# tf.app.flags.DEFINE_integer(
-#     'save_summaries_secs', 60,
-#     'The frequency with which summaries are saved, in seconds.')
-#
-# tf.app.flags.DEFINE_integer(
-#     'save_interval_secs', 60,
-#     'The frequency with which the model is saved, in seconds.')
 
-# tf.app.flags.DEFINE_string(
-#     'train_range', 'all',
-#     'train all net or only for refine net')
 
 FLAGS = tf.app.flags.FLAGS
 DTYPE = tf.float32
@@ -145,6 +134,9 @@ def main(_):
     net = factory(inputs=imgs, backbone_name=FLAGS.backbone_name,
                   is_training=True, dtype=DTYPE, config_dict=config_dict)
 
+    logger.info('Total trainable parameters:%s' %
+                str(np.sum([np.prod(v.get_shape().as_list()) for v in tf.trainable_variables()])))
+
     if config_dict['train_range'] is config.train_range.ALL:
         refine_out, det_out, clf_out = net.get_output()
 
@@ -166,20 +158,22 @@ def main(_):
         restore_saver = tf.train.Saver(reuse_vars_dict)
 
         if FLAGS.fix_refine:
-            train_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES,
+            train_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,
                                            scope="^((?!(backbone|refine)).)*$")  ##filter the refine model's vars
             total_loss = det_loss + clf_loss
         else:
-            train_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES)
+            train_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES)
             total_loss = refine_loss + det_loss + clf_loss
 
-        train_ops = net_tools.optimizer(total_loss, global_step, FLAGS.learning_rate, var_list=train_vars)
+        train_ops = net_tools.optimizer(total_loss, global_step, learning_rate=FLAGS.learning_rate,
+                                        batch_szie=FLAGS.batch_size, var_list=train_vars,
+                                        fix_learning_rate=False)
 
         ## merged the summary op and save the graph##
         summary_ops = tf.summary.merge_all()
 
-        logger.info('Total trainable parameters:%s' %
-                    str(np.sum([np.prod(v.get_shape().as_list()) for v in tf.trainable_variables()])))
+        ## saver
+        saver = tf.train.Saver(tf.global_variables())
 
         sess_config = tf.ConfigProto()
         sess_config.gpu_options.allow_growth = True
@@ -207,6 +201,9 @@ def main(_):
             avg_clf_loss = 0.
             avg_det_loss = 0.
             avg_time = 0.
+
+            tf.get_default_graph().finalize()
+
             while (True):
                 start = time()
                 update, summary, t_loss, c_loss, d_loss, current_step= \
@@ -225,7 +222,7 @@ def main(_):
                     if current_step % FLAGS.log_every_n_steps == FLAGS.log_every_n_steps - 1:
                         ## print info ##
                         logger.info('Step%s total_loss:%s det_loss:%s clf_loss:%s time_each_step:%s' % \
-                                    (str(current_step + 1), str(avg_loss), str(avg_det_loss), str(clf_loss),
+                                    (str(current_step + 1), str(avg_loss), str(avg_det_loss), str(avg_clf_loss),
                                      str(avg_time)))
                         avg_loss = 0.
                         avg_clf_loss = 0.
@@ -242,7 +239,7 @@ def main(_):
                         ## save model ##
                         logger.info('Saving model...')
                         model_name = os.path.join(FLAGS.train_dir, FLAGS.backbone_name + '.model')
-                        tf.train.Saver(tf.global_variables()).save(sess, model_name)
+                        saver.save(sess, model_name)
                         logger.info('Save model sucess...')
 
                 if FLAGS.max_number_of_steps != None:
@@ -258,7 +255,8 @@ def main(_):
         refine_loss = net_tools.refine_loss(refine_out, refine_gt, refine_pos_mask, dtype=DTYPE)
 
         ## build optimizer ##
-        train_ops = net_tools.optimizer(refine_loss, global_step, learning_rate=FLAGS.learning_rate)
+        train_ops = net_tools.optimizer(refine_loss, global_step, learning_rate=FLAGS.learning_rate,
+                                        batch_szie=FLAGS.batch_size, fix_learning_rate=False)
 
         ## merged the summary op and save the graph##
         summary_ops = tf.summary.merge_all()
@@ -267,6 +265,10 @@ def main(_):
         #                     number_of_steps=FLAGS.max_number_of_steps, log_every_n_steps=FLAGS.log_every_n_steps,
         #                     save_summaries_secs=FLAGS.save_summaries_secs, save_interval_secs=FLAGS.save_interval_secs)
 
+        ## saver
+        saver = tf.train.Saver(tf.global_variables())
+        init = tf.global_variables_initializer()
+
         sess_config = tf.ConfigProto()
         sess_config.gpu_options.allow_growth = True
         with tf.Session(config=sess_config) as sess:
@@ -274,7 +276,7 @@ def main(_):
             writer = tf.summary.FileWriter(FLAGS.summary_dir, sess.graph)
 
             if FLAGS.checkpoint_refine == None:
-                sess.run(tf.global_variables_initializer())
+                sess.run(init)
                 logger.info('TF variables init success...')
             else:
                 tf.train.Saver().restore(sess, FLAGS.checkpoint_refine)
@@ -316,7 +318,7 @@ def main(_):
                         ## save model ##
                         logger.info('Saving model...')
                         model_name = os.path.join(FLAGS.train_dir, FLAGS.backbone_name + '.model')
-                        tf.train.Saver(tf.global_variables()).save(sess, model_name)
+                        saver.save(sess, model_name)
                         logger.info('Save model sucess...')
 
                 if FLAGS.max_number_of_steps != None:
