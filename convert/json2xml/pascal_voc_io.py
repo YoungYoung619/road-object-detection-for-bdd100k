@@ -88,6 +88,7 @@ class PascalVocWriter:
             ymax = SubElement(bndbox, 'ymax')
             ymax.text = str(each_object['ymax'])
 
+
     def save(self, targetFile=None):
         root = self.genXML()
         self.appendObjects(root)

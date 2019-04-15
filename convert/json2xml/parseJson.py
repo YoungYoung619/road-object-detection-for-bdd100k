@@ -5,9 +5,9 @@ import json
 
 ## bdd100k obj types ##
 ## if you don't wanne some types ,just delete those types in this list.
-categorys = ['bus','traffic light',
-             'traffic sign','person','bike',
-             'truck','motor','car','train','rider']
+categorys = ['bus', 'traffic light',
+             'traffic sign', 'person',
+             'truck', 'car', 'rider']
 
 def parseJson(jsonFile):
     objs = []
