@@ -449,6 +449,7 @@ def det_groundtruth(refine_out, offset_gt, cbboxes,
     det_groundtruth = []
     det_labels = []
     pos_seg_config = config.det_pos_jac_val_all_layers
+    iou_all_layers = []
     with tf.name_scope(scope):
         for refine_out_one_l, offset_gt_one_l,cbboxes_one_l,\
             labels_one_l, refine_p_mask_one_l, anchors_one_l, pos_seg in zip(refine_out, offset_gt,
@@ -462,6 +463,7 @@ def det_groundtruth(refine_out, offset_gt, cbboxes,
             corner_bboxes = centerBboxes_2_cornerBboxes(cbboxes_one_l)
 
             iou_one_layer = jaccard(corner_adanchors_one_layer, corner_bboxes)
+            iou_all_layers.append(iou_one_layer)
             iou_one_layer_f = tf.expand_dims(iou_one_layer,axis=-1)
             positive_mask_oneL = tf.greater_equal(iou_one_layer_f, pos_seg)
             positive_mask_oneL = tf.cast(positive_mask_oneL, dtype=tf.int32)*tf.cast(refine_p_mask_one_l,tf.int32) ###filter some bboxes
@@ -470,7 +472,7 @@ def det_groundtruth(refine_out, offset_gt, cbboxes,
             det_labels.append(labels_one_l*positive_mask_oneL)
             mask_all_layers.append(positive_mask_oneL)
 
-    return det_groundtruth, mask_all_layers, det_labels
+    return det_groundtruth, mask_all_layers, det_labels, iou_all_layers
 
 
 def smooth_l1(x):
@@ -514,7 +516,8 @@ def refine_loss(refine_out, refine_groundtruth, refine_pos_mask, dtype=tf.float3
     return refine_loss
 
 
-def det_clf_loss(refine_out, clf_out, det_out, det_groundtruth, det_pos_mask, det_labels, dtype=tf.float32):
+def det_clf_loss(refine_out, clf_out, det_out, det_groundtruth,
+                 det_pos_mask, det_labels, iou_all_layers, dtype=tf.float32):
     """build the loss of offset and classification
     Args:
         refine_out: the output of refine net, represents the prediciton of offset from initial anchor to groundtruth.
@@ -584,19 +587,32 @@ def det_clf_loss(refine_out, clf_out, det_out, det_groundtruth, det_pos_mask, de
             nmask = tf.logical_and(nmask, nvalues < max_hard_pred)
             fnmask = tf.cast(nmask, dtype)
 
+            iou_factor = []
+            for iou_one_layer in iou_all_layers:
+                mean, variance = tf.nn.moments(iou_one_layer, axes=[1,2,3], keep_dims=True)
+                iou_one_layer = (iou_one_layer-mean)/(tf.sqrt(variance+1e-8))
+
+                ## normalize to 0-1
+                iou_one_layer += 0. - tf.reduce_min(iou_one_layer, axis=[1,2,3], keep_dims=True)
+                iou_one_layer /= (tf.reduce_max(iou_one_layer, axis=[1,2,3], keep_dims=True) + 1e-8)
+                iou_factor_one_layer = tf.pow(iou_one_layer, 4)
+                iou_factor.append(tf.reshape(iou_factor_one_layer, shape=[-1]))
+            iou_factor = tf.concat(iou_factor, axis=0)
+
             with tf.name_scope('cross_entropy_pos'):
-                ## focal loss
-                focal_factor = tf.square(tf.one_hot(gclasses, config.total_obj_n)*(1. - slim.softmax(logits)))
-                pos_loss = tf.nn.softmax_cross_entropy_with_logits(logits=logits,
-                                                                    labels=focal_factor)
-                pos_loss = tf.div(tf.reduce_sum(pos_loss * fpmask), bs, name='value')
+                # clf_weights = config.clf_weights
+                # gclasses = tf.one_hot(gclasses, config.total_obj_n)*clf_weights
+                pos_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=logits,
+                                                                    labels=gclasses)
+                pos_loss = tf.div(tf.reduce_sum(pos_loss * fpmask * iou_factor), bs, name='value')
 
             with tf.name_scope('cross_entropy_neg'):
-                neg_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=logits,
-                                                                              labels=no_classes)
+                # focal_factor = tf.one_hot(no_classes, config.total_obj_n)*tf.pow((1. - slim.softmax(logits)), 2)
+                # neg_loss = tf.nn.softmax_cross_entropy_with_logits(logits=logits, labels=focal_factor)
+                neg_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=logits, labels=no_classes)
                 neg_loss = tf.div(tf.reduce_sum(neg_loss * fnmask), bs, name='value')
 
-            clf_loss = neg_loss + pos_loss
+            clf_loss = neg_loss/2. + pos_loss
 
         tf.summary.scalar('det_loss', det_loss)
         tf.summary.scalar('neg_loss', neg_loss)
@@ -620,13 +636,13 @@ def optimizer(loss, global_step, batch_szie, learning_rate=1e-3, var_list=None, 
         l_rate = learning_rate
     else:
         l_rate = tf.train.exponential_decay(learning_rate, global_step,
-                                                70000 / batch_szie,
+                                                20000 / batch_szie,
                                                 0.97, staircase=True)
         tf.summary.scalar('learning_rate', l_rate)
     update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
     with tf.control_dependencies(update_ops):
-        optimizer = tf.train.AdamOptimizer(learning_rate=l_rate, epsilon=1e-8)
-        #optimizer = tf.train.GradientDescentOptimizer(learning_rate=learning_rate)
+        # optimizer = tf.train.AdamOptimizer(learning_rate=l_rate, epsilon=1e-8)
+        optimizer = tf.train.GradientDescentOptimizer(learning_rate=learning_rate)
         grads_and_vars = optimizer.compute_gradients(loss, var_list=var_list)
 
         ## clip the gradients ##
