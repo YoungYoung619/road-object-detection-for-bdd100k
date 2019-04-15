@@ -55,19 +55,36 @@ V2_DEF = dict(
         (slim.conv2d, slim.max_pool2d, slim.separable_conv2d): {'padding': 'SAME'}
     },
     spec=[
-        op(slim.conv2d, stride=1, num_outputs=32, kernel_size=[3, 3]),
-        op(ops.expanded_conv,
-           expansion_size=expand_input(1, divisible_by=1),
-           num_outputs=16),
-        op(ops.expanded_conv, stride=2, num_outputs=24),
-        op(ops.expanded_conv, stride=1, num_outputs=24),
-        op(ops.expanded_conv, stride=2, num_outputs=32),
-        op(ops.expanded_conv, stride=1, num_outputs=32),
-        op(ops.expanded_conv, stride=1, num_outputs=32),
-        op(ops.expanded_conv, stride=2, num_outputs=64),
-        op(ops.expanded_conv, stride=1, num_outputs=64),
-        op(ops.expanded_conv, stride=1, num_outputs=64),
-        op(ops.expanded_conv, stride=1, num_outputs=64),
+        ##add
+        op(slim.conv2d, stride=1, num_outputs=64, kernel_size=[3, 3]),
+        op(slim.conv2d, stride=1, num_outputs=64, kernel_size=[3, 3]),
+
+        op(slim.max_pool2d, stride=2, kernel_size=[2, 2]),
+        op(slim.conv2d, stride=1, num_outputs=128, kernel_size=[3, 3]),
+        op(slim.conv2d, stride=1, num_outputs=128, kernel_size=[3, 3]),
+
+        op(slim.max_pool2d, stride=2, kernel_size=[2, 2]),
+        op(slim.conv2d, stride=1, num_outputs=256, kernel_size=[3, 3]),
+        op(slim.conv2d, stride=1, num_outputs=256, kernel_size=[3, 3]),
+
+        op(slim.max_pool2d, stride=2, kernel_size=[2, 2]),
+        op(slim.conv2d, stride=1, num_outputs=512, kernel_size=[3, 3]),
+        op(slim.conv2d, stride=1, num_outputs=512, kernel_size=[3, 3]),
+        ##add
+
+        # op(slim.conv2d, stride=2, num_outputs=32, kernel_size=[3, 3]),
+        # op(ops.expanded_conv,
+        #    expansion_size=expand_input(1, divisible_by=1),
+        #    num_outputs=16),
+        # op(ops.expanded_conv, stride=2, num_outputs=24),
+        # op(ops.expanded_conv, stride=1, num_outputs=24),
+        # op(ops.expanded_conv, stride=2, num_outputs=32),
+        # op(ops.expanded_conv, stride=1, num_outputs=32),
+        # op(ops.expanded_conv, stride=1, num_outputs=32),
+        # op(ops.expanded_conv, stride=2, num_outputs=64),
+        # op(ops.expanded_conv, stride=1, num_outputs=64),
+        # op(ops.expanded_conv, stride=1, num_outputs=64),
+        # op(ops.expanded_conv, stride=1, num_outputs=64),
         op(ops.expanded_conv, stride=2, num_outputs=96),
         op(ops.expanded_conv, stride=1, num_outputs=96),
         op(ops.expanded_conv, stride=1, num_outputs=96),
@@ -89,7 +106,7 @@ V2_DEF = dict(
 
 
 @slim.add_arg_scope
-def mobilenet_v2(inputs,
+def vgg_mobilenet_v2(inputs,
               depth_multiplier=1.0,
               scope='MobilenetV2',
               conv_defs=None,
@@ -162,7 +179,7 @@ def mobilenet_v2(inputs,
 @slim.add_arg_scope
 def mobilenet_base(input_tensor, depth_multiplier=1.0, **kwargs):
   """Creates base of the mobilenet (no pooling and no logits) ."""
-  return mobilenet_v2(input_tensor,
+  return vgg_mobilenet_v2(input_tensor,
                    depth_multiplier=depth_multiplier,
                    base_only=True, **kwargs)
 
@@ -195,5 +212,5 @@ __all__ = ['training_scope', 'mobilenet_base', 'mobilenet', 'V2_DEF']
 if __name__ == '__main__':
     imgs = tf.placeholder(dtype=tf.float16, shape=[None, 418, 418, 3])
     with tf.contrib.slim.arg_scope(training_scope(is_training=True, dropout_keep_prob=1.)):
-        endpoints = mobilenet_v2(inputs=imgs, is_training=True)
+        endpoints = vgg_mobilenet_v2(inputs=imgs, is_training=True)
     pass

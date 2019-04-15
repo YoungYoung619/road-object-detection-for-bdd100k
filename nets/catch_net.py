@@ -17,6 +17,7 @@ import tensorflow as tf
 
 import utils.net_tools as net_tools
 from nets.backbone.mobilenet.mobilenet_v2 import mobilenet_v2
+from nets.backbone.mobilenet.vgg_mbn_v2 import vgg_mobilenet_v2
 from nets.backbone.mobilenet.mobilenet_v2 import training_scope
 from nets.backbone.vgg import vgg_16
 from nets.backbone.vgg import vgg_arg_scope
@@ -27,9 +28,11 @@ from nets.attention_module import *
 slim = tf.contrib.slim
 
 backbone_maps = {"mobilenet_v2":mobilenet_v2,
-                 "vgg_16": vgg_16}
+                 "vgg_16": vgg_16,
+                 'vgg_mbn_v2':vgg_mobilenet_v2}
 arg_maps = {"mobilenet_v2":training_scope,
-                 "vgg_16": vgg_arg_scope}
+                 "vgg_16": vgg_arg_scope,
+            'vgg_mbn_v2':training_scope}
 
 class factory(object):
     """a class provide the net output"""
@@ -64,7 +67,7 @@ class factory(object):
                 self.deconv_feats  = deconv_feats
                 tf.logging.info('Merging feats...')
                 merge_feats = self.__merge_feats(backbone_feats, deconv_feats, config_dict['merge_method'],
-                                                 attention_module=se_block)
+                                                 attention_module=None)
                 self.merge_feats = merge_feats
 
             ## build refine, det, clf net ##
@@ -80,7 +83,7 @@ class factory(object):
                 self.deconv_feats = deconv_feats
                 tf.logging.info('Merging feats...')
                 merge_feats = self.__merge_feats(backbone_feats, deconv_feats,
-                                                 config_dict['merge_method'], attention_module=se_block)
+                                                 config_dict['merge_method'], attention_module=None)
                 self.merge_feats = merge_feats
 
                 ## build refine, det, clf net ##
@@ -111,9 +114,9 @@ class factory(object):
             return backbone_feats
         elif method is config.process_backbone_method.PREORDER_MSF:
             if self.backbone_name == 'mobilenet_v2':
-                aug_extrated_feats_blocks = [['layer_2', 'layer_4'],
+                aug_extrated_feats_blocks = [['layer_4', 'layer_7'],
                                             ['layer_7', 'layer_11']]
-                compress_ch_blocks = [[4, 8], [12, 48]]
+                compress_ch_blocks = [[4, 16], [3, 12]]
 
                 for index, feat_name in enumerate(config.extract_feat_name[self.backbone_name]):
                     if index < len(aug_extrated_feats_blocks):
