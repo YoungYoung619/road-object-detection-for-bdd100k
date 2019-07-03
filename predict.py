@@ -26,7 +26,7 @@ slim = tf.contrib.slim
 
 tf.app.flags.DEFINE_string(
     'backbone_name', 'mobilenet_v2',
-    'The name of the architecture to train.')
+    'The name of the architec ture to train.')
 
 tf.app.flags.DEFINE_integer(
     'num_readers', 4,
@@ -169,8 +169,8 @@ def main(_):
                                                                                    labels,
                                                                                    scores,
                                                                                    config.category_index,
-                                                                                   skip_labels=True,
-                                                                                   skip_scores=True)
+                                                                                   skip_labels=False,
+                                                                                   skip_scores=False)
             img_pred = cv2.cvtColor(img_pred, cv2.COLOR_RGB2BGR)
             cv2.imshow('Prediction', img_pred)
 
