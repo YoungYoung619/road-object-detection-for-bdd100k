@@ -56,7 +56,7 @@ tf.app.flags.DEFINE_integer(
 # evaluation Flags.
 # =========================================================================== #
 tf.app.flags.DEFINE_float(
-    'select_threshold', 0.1, 'Selection threshold.')
+    'select_threshold', 0.3, 'Selection threshold.')
 tf.app.flags.DEFINE_integer(
     'select_top_k', 400, 'Select top-k detected bounding boxes.')
 tf.app.flags.DEFINE_integer(
@@ -64,7 +64,7 @@ tf.app.flags.DEFINE_integer(
 tf.app.flags.DEFINE_float(
     'nms_threshold', 0.4, 'Non-Maximum Selection threshold.')
 tf.app.flags.DEFINE_float(
-    'matching_threshold', 0.7, 'Matching threshold with groundtruth objects.')
+    'matching_threshold', 0.5, 'Matching threshold with groundtruth objects.')
 tf.app.flags.DEFINE_float(
     'gpu_memory_fraction', 0.8, 'GPU memory fraction to use.')
 
@@ -100,7 +100,7 @@ def main(_):
         dataset = dataset_factory.get_dataset(
             'bdd100k', 'train', './dataset/bdd100k_TfRecord/')
         img, labels, bboxes = data_pileline_tools.prepare_data_test(dataset, num_readers=FLAGS.num_readers,
-                                                                     batch_size=FLAGS.batch_size, shuffle=True)
+                                                                     batch_size=FLAGS.batch_size, shuffle=False)
         difficults = tf.zeros(tf.shape(labels), dtype=tf.int64)
 
 
