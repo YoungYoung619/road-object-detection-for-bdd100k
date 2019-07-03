@@ -27,7 +27,7 @@ tf.app.flags.DEFINE_string(
     'backbone_name', 'mobilenet_v2',
     'The name of the architecture to train.')
 
-tf.app.flags.DEFINE_float('learning_rate', 1e-2, 'Initial learning rate.')
+tf.app.flags.DEFINE_float('learning_rate', 1e-3, 'Initial learning rate.')
 
 tf.app.flags.DEFINE_integer(
     'batch_size', 20, 'The number of samples in each batch.')
@@ -45,7 +45,7 @@ tf.app.flags.DEFINE_string(
     'checkpoint(for all net) full name from which to fine-tune.')
 
 tf.app.flags.DEFINE_string(
-    'checkpoint_refine', 'checkpoint/refine/vgg_mbn_none/mobilenet_v2.model',
+    'checkpoint_refine', 'checkpoint/mbn_none53x35/refine/mobilenet_v2.model',
     'checkpoint(for all net) full name from which to fine-tune.')
 
 tf.app.flags.DEFINE_string(
@@ -68,7 +68,7 @@ tf.app.flags.DEFINE_integer(
     'The frequency with which summary are writed.')
 
 tf.app.flags.DEFINE_integer(
-    'save_every_n_steps', 1000,
+    'save_every_n_steps', 2000,
     'The frequency with which model are saved.')
 
 tf.app.flags.DEFINE_boolean(
@@ -127,7 +127,7 @@ def main(_):
         imgs = tf.cast(imgs, dtype=DTYPE)
 
     logger.info('Building model, using backbone---%s' % (FLAGS.backbone_name))
-    config_dict = {'train_range': config.train_range.ALL,
+    config_dict = {'train_range': config.train_range.REFINE,
                    'process_backbone_method': config.process_backbone_method.NONE,
                    'deconv_method': config.deconv_method.LEARN_HALF,
                    'merge_method': config.merge_method.ADD}
@@ -144,12 +144,12 @@ def main(_):
         refine_loss = net_tools.refine_loss(refine_out, refine_gt, refine_pos_mask, dtype=DTYPE)
 
         ## calculate the groudtruth of offset and classification ##
-        det_gt, det_pos_mask, det_labels = \
+        det_gt, det_pos_mask, det_labels, iou_all_layers = \
             net_tools.det_groundtruth(refine_out, refine_gt, refine_cbboxes, refine_labels,
                                       refine_pos_mask, anchors_all)
 
         det_loss, clf_loss = net_tools.det_clf_loss(refine_out, clf_out, det_out, det_gt,
-                                                    det_pos_mask, det_labels, dtype=DTYPE)
+                                                    det_pos_mask, det_labels, iou_all_layers, dtype=DTYPE)
 
         ## reuse refine net ##
         reuse_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES,
